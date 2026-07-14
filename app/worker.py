@@ -76,6 +76,7 @@ def create_decision(snapshot, binance_data: Optional[dict[str, Any]] = None) -> 
     same_epoch_snapshots = db.load_snapshots(snapshot.betting_epoch)
     rounds = db.load_rounds(settings.m9_history_limit)
     settled_history = db.settled_component_history(settings.adaptive_weight_lookback)
+    payout_history = db.payout_calibration_history(settings.payout_calibration_lookback)
     model = build_decision(
         snapshot=snapshot,
         same_epoch_snapshots=same_epoch_snapshots,
@@ -83,12 +84,15 @@ def create_decision(snapshot, binance_data: Optional[dict[str, Any]] = None) -> 
         binance_data=binance_data,
         state=state,
         settled_history=settled_history,
+        payout_history=payout_history,
     )
     data = {
         "betting_epoch": snapshot.betting_epoch,
         "live_epoch": snapshot.live_epoch,
         "locked_at_chain_timestamp": snapshot.chain_timestamp,
         "locked_at_seconds_to_lock": snapshot.seconds_to_lock,
+        # Kept as bank_before for backward API compatibility. Semantically
+        # this is the bank visible when the decision was created.
         "bank_before": float(state.get("bank", settings.start_bank)),
         "snapshot": snapshot.to_dict(),
         **model,

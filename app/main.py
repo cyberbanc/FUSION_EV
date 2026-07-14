@@ -10,6 +10,7 @@ from fastapi.responses import Response
 
 from . import __version__, db
 from .config import settings
+from .ensemble import payout_calibration
 from .pancake_client import from_env
 from .worker import create_decision, loop, settle_pending, status as worker_status, sync_recent, tick
 
@@ -53,7 +54,7 @@ def root():
         "service": "m9-fusion-ev-paper-bot",
         "version": __version__,
         "mode": "PAPER",
-        "strategy": "probability ensemble plus payout-aware expected value",
+        "strategy": "probability ensemble plus adaptively calibrated payout-aware expected value",
         "decision_lock": f"T-{settings.prelock_seconds}",
         "stake_mode": [settings.base_stake, settings.medium_stake, settings.high_stake],
         "real_transactions": False,
@@ -65,6 +66,7 @@ def root():
             "history": "/history?limit=1000",
             "csv": "/history/export.csv",
             "model_performance": "/model/performance",
+            "payout_calibration": "/payout/calibration",
         },
     }
 
@@ -111,6 +113,10 @@ def signal(auto_lock: bool = True):
         "stake": decision.get("stake") if decision else settings.base_stake,
         "probability_up": decision.get("probability_up") if decision else None,
         "probability_down": decision.get("probability_down") if decision else None,
+        "raw_expected_coeff_up": decision.get("raw_expected_coeff_up") if decision else None,
+        "raw_expected_coeff_down": decision.get("raw_expected_coeff_down") if decision else None,
+        "payout_correction_up": decision.get("payout_correction_up") if decision else None,
+        "payout_correction_down": decision.get("payout_correction_down") if decision else None,
         "expected_coeff_up": decision.get("expected_coeff_up") if decision else snapshot.current_net_coeff_up,
         "expected_coeff_down": decision.get("expected_coeff_down") if decision else snapshot.current_net_coeff_down,
         "ev_up": decision.get("ev_up") if decision else None,
@@ -215,6 +221,17 @@ def rounds(limit: int = Query(30, ge=1)):
 @app.get("/snapshots/{epoch}")
 def snapshots(epoch: int):
     return {"ok": True, "epoch": epoch, "snapshots": db.load_snapshots(epoch)}
+
+
+@app.get("/payout/calibration")
+def payout_calibration_status(limit: int = Query(300, ge=1, le=5000)):
+    rows = db.payout_calibration_history(limit)
+    return {
+        "ok": True,
+        "version": __version__,
+        "calibration": payout_calibration(rows),
+        "history_rows": len(rows),
+    }
 
 
 @app.get("/model/performance")

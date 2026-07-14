@@ -98,6 +98,10 @@ def init_db() -> None:
                 signal TEXT NOT NULL CHECK (signal IN ('UP','DOWN')),
                 probability_up DOUBLE PRECISION NOT NULL,
                 probability_down DOUBLE PRECISION NOT NULL,
+                raw_expected_coeff_up DOUBLE PRECISION,
+                raw_expected_coeff_down DOUBLE PRECISION,
+                payout_correction_up DOUBLE PRECISION,
+                payout_correction_down DOUBLE PRECISION,
                 expected_coeff_up DOUBLE PRECISION NOT NULL,
                 expected_coeff_down DOUBLE PRECISION NOT NULL,
                 ev_up DOUBLE PRECISION NOT NULL,
@@ -118,13 +122,73 @@ def init_db() -> None:
                 final_move_points DOUBLE PRECISION,
                 outcome TEXT,
                 pnl DOUBLE PRECISION,
+                bank_before_settlement DOUBLE PRECISION,
                 bank_after DOUBLE PRECISION,
+                final_coeff_up DOUBLE PRECISION,
+                final_coeff_down DOUBLE PRECISION,
+                actual_ev_signal DOUBLE PRECISION,
+                payout_ratio_signal DOUBLE PRECISION,
                 settled_at TIMESTAMPTZ,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """
         )
+        # Safe in-place migration from v1.0.x. Existing history is preserved.
+        for statement in (
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS raw_expected_coeff_up DOUBLE PRECISION",
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS raw_expected_coeff_down DOUBLE PRECISION",
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_correction_up DOUBLE PRECISION",
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_correction_down DOUBLE PRECISION",
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS bank_before_settlement DOUBLE PRECISION",
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS final_coeff_up DOUBLE PRECISION",
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS final_coeff_down DOUBLE PRECISION",
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS actual_ev_signal DOUBLE PRECISION",
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_ratio_signal DOUBLE PRECISION",
+        ):
+            cur.execute(statement)
+
+        # Backfill final hypothetical UP/DOWN payouts for already-settled v1.0.x
+        # decisions. This immediately lets v1.1 learn from the retained history.
+        cur.execute(
+            """
+            UPDATE fusion_decisions d SET
+                final_coeff_up = CASE
+                    WHEN r.bull_amount_bnb > 0
+                    THEN (r.total_amount_bnb * (1.0 - %s)) / r.bull_amount_bnb
+                    ELSE NULL END,
+                final_coeff_down = CASE
+                    WHEN r.bear_amount_bnb > 0
+                    THEN (r.total_amount_bnb * (1.0 - %s)) / r.bear_amount_bnb
+                    ELSE NULL END
+            FROM fusion_rounds r
+            WHERE d.betting_epoch = r.epoch
+              AND d.settled = TRUE
+              AND (d.final_coeff_up IS NULL OR d.final_coeff_down IS NULL)
+            """,
+            (settings.treasury_fee, settings.treasury_fee),
+        )
+        cur.execute(
+            """
+            UPDATE fusion_decisions SET
+                actual_ev_signal = CASE
+                    WHEN signal='UP' AND final_coeff_up IS NOT NULL
+                        THEN probability_up * final_coeff_up - 1.0
+                    WHEN signal='DOWN' AND final_coeff_down IS NOT NULL
+                        THEN probability_down * final_coeff_down - 1.0
+                    ELSE actual_ev_signal END,
+                payout_ratio_signal = CASE
+                    WHEN signal='UP' AND final_coeff_up IS NOT NULL
+                         AND COALESCE(raw_expected_coeff_up, expected_coeff_up) > 1.0
+                        THEN final_coeff_up / COALESCE(raw_expected_coeff_up, expected_coeff_up)
+                    WHEN signal='DOWN' AND final_coeff_down IS NOT NULL
+                         AND COALESCE(raw_expected_coeff_down, expected_coeff_down) > 1.0
+                        THEN final_coeff_down / COALESCE(raw_expected_coeff_down, expected_coeff_down)
+                    ELSE payout_ratio_signal END
+            WHERE settled=TRUE
+            """
+        )
+
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS fusion_state (
@@ -302,12 +366,16 @@ def insert_decision(data: dict[str, Any]) -> bool:
             """
             INSERT INTO fusion_decisions(
                 betting_epoch,live_epoch,locked_at_chain_timestamp,locked_at_seconds_to_lock,
-                signal,probability_up,probability_down,expected_coeff_up,expected_coeff_down,
+                signal,probability_up,probability_down,
+                raw_expected_coeff_up,raw_expected_coeff_down,payout_correction_up,payout_correction_down,
+                expected_coeff_up,expected_coeff_down,
                 ev_up,ev_down,selected_ev,agreement,decision_quality,stake,bank_before,
                 components_json,weights_json,features_json,snapshot_json
             ) VALUES(
                 %(betting_epoch)s,%(live_epoch)s,%(locked_at_chain_timestamp)s,%(locked_at_seconds_to_lock)s,
-                %(signal)s,%(probability_up)s,%(probability_down)s,%(expected_coeff_up)s,%(expected_coeff_down)s,
+                %(signal)s,%(probability_up)s,%(probability_down)s,
+                %(raw_expected_coeff_up)s,%(raw_expected_coeff_down)s,%(payout_correction_up)s,%(payout_correction_down)s,
+                %(expected_coeff_up)s,%(expected_coeff_down)s,
                 %(ev_up)s,%(ev_down)s,%(selected_ev)s,%(agreement)s,%(decision_quality)s,%(stake)s,%(bank_before)s,
                 %(components_json)s,%(weights_json)s,%(features_json)s,%(snapshot_json)s
             ) ON CONFLICT(betting_epoch) DO NOTHING
@@ -334,6 +402,14 @@ def unsettled_decisions(limit: int = 50) -> list[dict[str, Any]]:
         return [dict(row) for row in cur.fetchall()]
 
 
+def _hypothetical_final_coefficients(row: RoundData) -> tuple[Optional[float], Optional[float]]:
+    total = float(row.total_amount_bnb or 0.0)
+    net_pool = total * (1.0 - settings.treasury_fee)
+    up = net_pool / float(row.bull_amount_bnb) if row.bull_amount_bnb and row.bull_amount_bnb > 0 else None
+    down = net_pool / float(row.bear_amount_bnb) if row.bear_amount_bnb and row.bear_amount_bnb > 0 else None
+    return up, down
+
+
 def settle_decision_atomic(epoch: int, row: RoundData) -> bool:
     with connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM fusion_decisions WHERE betting_epoch=%s FOR UPDATE", (int(epoch),))
@@ -358,6 +434,36 @@ def settle_decision_atomic(epoch: int, row: RoundData) -> bool:
             pnl = -stake
         bank_before = float(state["bank"])
         bank_after = bank_before + pnl
+        final_coeff_up, final_coeff_down = _hypothetical_final_coefficients(row)
+        selected_final_coeff = final_coeff_up if signal == "UP" else final_coeff_down
+        selected_probability = (
+            float(decision["probability_up"])
+            if signal == "UP"
+            else float(decision["probability_down"])
+        )
+        actual_ev_signal = (
+            selected_probability * selected_final_coeff - 1.0
+            if selected_final_coeff is not None
+            else None
+        )
+        raw_selected_coeff = (
+            decision.get("raw_expected_coeff_up")
+            if signal == "UP"
+            else decision.get("raw_expected_coeff_down")
+        )
+        if raw_selected_coeff is None:
+            raw_selected_coeff = (
+                decision.get("expected_coeff_up")
+                if signal == "UP"
+                else decision.get("expected_coeff_down")
+            )
+        payout_ratio_signal = (
+            selected_final_coeff / float(raw_selected_coeff)
+            if selected_final_coeff is not None
+            and raw_selected_coeff is not None
+            and float(raw_selected_coeff) > 1.0
+            else None
+        )
         wins = int(state["wins"]) + (1 if outcome == "WIN" else 0)
         losses = int(state["losses"]) + (1 if outcome == "LOSS" else 0)
         draws = int(state["draws"]) + (1 if outcome == "DRAW" else 0)
@@ -371,13 +477,18 @@ def settle_decision_atomic(epoch: int, row: RoundData) -> bool:
             """
             UPDATE fusion_decisions SET
                 settled=TRUE,final_winner=%s,final_coeff_gross=%s,final_coeff_net=%s,
-                final_move_points=%s,outcome=%s,pnl=%s,bank_after=%s,
+                final_move_points=%s,outcome=%s,pnl=%s,
+                bank_before_settlement=%s,bank_after=%s,
+                final_coeff_up=%s,final_coeff_down=%s,
+                actual_ev_signal=%s,payout_ratio_signal=%s,
                 settled_at=NOW(),updated_at=NOW()
             WHERE betting_epoch=%s
             """,
             (
                 winner,row.winner_coeff_gross,row.winner_coeff_net,row.move_points,
-                outcome,pnl,bank_after,int(epoch),
+                outcome,pnl,bank_before,bank_after,
+                final_coeff_up,final_coeff_down,actual_ev_signal,payout_ratio_signal,
+                int(epoch),
             ),
         )
         cur.execute(
@@ -430,13 +541,38 @@ def settled_component_history(limit: int = 300) -> list[dict[str, Any]]:
         return [dict(row) for row in cur.fetchall()]
 
 
+def payout_calibration_history(limit: int = 300) -> list[dict[str, Any]]:
+    safe = max(1, min(int(limit), 5000))
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT betting_epoch,
+                   raw_expected_coeff_up,raw_expected_coeff_down,
+                   expected_coeff_up,expected_coeff_down,
+                   final_coeff_up,final_coeff_down
+            FROM fusion_decisions
+            WHERE settled=TRUE
+              AND final_coeff_up IS NOT NULL
+              AND final_coeff_down IS NOT NULL
+            ORDER BY betting_epoch DESC LIMIT %s
+            """,
+            (safe,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
 def export_csv() -> str:
     rows = decision_history(limit=settings.history_api_max_limit, ascending=True)
     output = io.StringIO()
     fields = [
-        "betting_epoch","signal","probability_up","expected_coeff_up","expected_coeff_down",
-        "ev_up","ev_down","selected_ev","agreement","decision_quality","stake","bank_before",
-        "final_winner","final_coeff_net","outcome","pnl","bank_after","locked_at_seconds_to_lock",
+        "betting_epoch","signal","probability_up","probability_down",
+        "raw_expected_coeff_up","raw_expected_coeff_down",
+        "payout_correction_up","payout_correction_down",
+        "expected_coeff_up","expected_coeff_down",
+        "ev_up","ev_down","selected_ev","agreement","decision_quality","stake",
+        "bank_before","bank_before_settlement","bank_after",
+        "final_winner","final_coeff_net","final_coeff_up","final_coeff_down",
+        "actual_ev_signal","payout_ratio_signal","outcome","pnl","locked_at_seconds_to_lock",
         "created_at","settled_at",
     ]
     writer = csv.DictWriter(output, fieldnames=fields)

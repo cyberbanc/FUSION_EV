@@ -61,13 +61,34 @@ class Settings:
     ev_high_threshold: float = _float("EV_HIGH_THRESHOLD", 0.12)
     medium_agreement: float = _float("MEDIUM_AGREEMENT", 0.60)
     high_agreement: float = _float("HIGH_AGREEMENT", 0.70)
-    min_trades_variable_stake: int = _int("MIN_TRADES_FOR_VARIABLE_STAKE", 100)
+    min_trades_variable_stake: int = _int("MIN_TRADES_FOR_VARIABLE_STAKE", 200)
     probability_shrink: float = _float("PROBABILITY_SHRINK", 0.75)
+
+    # Static pool-based haircut. This produces the raw payout estimate before
+    # the adaptive correction learned from completed rounds is applied.
     payout_haircut: float = _float("PAYOUT_HAIRCUT", 0.85)
     payout_cap: float = _float("PAYOUT_CAP", 4.0)
     neutral_net_coefficient: float = _float("NEUTRAL_NET_COEFFICIENT", 1.94)
     min_pool_bnb: float = _float("MIN_POOL_BNB", 0.10)
     min_side_pool_bnb: float = _float("MIN_SIDE_POOL_BNB", 0.03)
+
+    # Adaptive payout calibration. During early history a deliberately
+    # conservative 0.75 multiplier is used. Once enough completed rounds are
+    # available, the multiplier is learned from a low quantile of actual/raw
+    # payout ratios, separately for UP and DOWN.
+    payout_initial_correction: float = _float("PAYOUT_INITIAL_CORRECTION", 0.75)
+    payout_calibration_lookback: int = _int("PAYOUT_CALIBRATION_LOOKBACK", 300)
+    payout_calibration_min_samples: int = _int("PAYOUT_CALIBRATION_MIN_SAMPLES", 50)
+    payout_calibration_quantile: float = _float("PAYOUT_CALIBRATION_QUANTILE", 0.25)
+    payout_correction_min: float = _float("PAYOUT_CORRECTION_MIN", 0.50)
+    payout_correction_max: float = _float("PAYOUT_CORRECTION_MAX", 0.90)
+
+    # A payout-driven contrarian choice must have enough model agreement and
+    # corrected EV. Otherwise every-round trading falls back to the more
+    # probable direction with the minimum stake.
+    low_agreement_threshold: float = _float("LOW_AGREEMENT_THRESHOLD", 0.20)
+    low_agreement_min_ev: float = _float("LOW_AGREEMENT_MIN_EV", 0.05)
+    negative_ev_probability_fallback: bool = _bool("NEGATIVE_EV_PROBABILITY_FALLBACK", True)
 
     binance_enabled: bool = _bool("BINANCE_ENABLED", True)
     binance_symbol: str = os.getenv("BINANCE_SYMBOL", "BNBUSDT").strip().upper()
