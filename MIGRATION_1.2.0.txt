@@ -1,0 +1,22 @@
+M9 FUSION EV 1.2.0 — ПОЛНАЯ ЗАМЕНА
+
+1. Полностью замените все файлы GitHub содержимым этого архива.
+2. PostgreSQL НЕ удаляйте и НЕ пересоздавайте.
+3. В Railway Variables замените старый набор целиком новым RAILWAY_VARIABLES.txt.
+4. Оставьте VARIABLE_STAKE_ENABLED=false.
+5. Выполните Redeploy и оставьте одну replica.
+
+Автоматическая миграция добавляет без очистки истории:
+- strategy_version
+- payout_bucket_up
+- payout_bucket_down
+
+Новые решения получают strategy_version=1.2.0.
+Старые решения сохраняются с версией legacy.
+
+Проверка после deploy:
+/health
+/signal
+/payout/calibration
+/strategy/performance
+/status?limit=30

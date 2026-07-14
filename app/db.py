@@ -93,6 +93,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS fusion_decisions (
                 betting_epoch BIGINT PRIMARY KEY,
                 live_epoch BIGINT NOT NULL,
+                strategy_version TEXT NOT NULL DEFAULT 'legacy',
                 locked_at_chain_timestamp BIGINT NOT NULL,
                 locked_at_seconds_to_lock INTEGER NOT NULL,
                 signal TEXT NOT NULL CHECK (signal IN ('UP','DOWN')),
@@ -102,6 +103,8 @@ def init_db() -> None:
                 raw_expected_coeff_down DOUBLE PRECISION,
                 payout_correction_up DOUBLE PRECISION,
                 payout_correction_down DOUBLE PRECISION,
+                payout_bucket_up TEXT,
+                payout_bucket_down TEXT,
                 expected_coeff_up DOUBLE PRECISION NOT NULL,
                 expected_coeff_down DOUBLE PRECISION NOT NULL,
                 ev_up DOUBLE PRECISION NOT NULL,
@@ -136,10 +139,13 @@ def init_db() -> None:
         )
         # Safe in-place migration from v1.0.x. Existing history is preserved.
         for statement in (
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS strategy_version TEXT NOT NULL DEFAULT 'legacy'",
             "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS raw_expected_coeff_up DOUBLE PRECISION",
             "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS raw_expected_coeff_down DOUBLE PRECISION",
             "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_correction_up DOUBLE PRECISION",
             "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_correction_down DOUBLE PRECISION",
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_bucket_up TEXT",
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_bucket_down TEXT",
             "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS bank_before_settlement DOUBLE PRECISION",
             "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS final_coeff_up DOUBLE PRECISION",
             "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS final_coeff_down DOUBLE PRECISION",
@@ -365,16 +371,18 @@ def insert_decision(data: dict[str, Any]) -> bool:
         cur.execute(
             """
             INSERT INTO fusion_decisions(
-                betting_epoch,live_epoch,locked_at_chain_timestamp,locked_at_seconds_to_lock,
+                betting_epoch,live_epoch,strategy_version,locked_at_chain_timestamp,locked_at_seconds_to_lock,
                 signal,probability_up,probability_down,
                 raw_expected_coeff_up,raw_expected_coeff_down,payout_correction_up,payout_correction_down,
+                payout_bucket_up,payout_bucket_down,
                 expected_coeff_up,expected_coeff_down,
                 ev_up,ev_down,selected_ev,agreement,decision_quality,stake,bank_before,
                 components_json,weights_json,features_json,snapshot_json
             ) VALUES(
-                %(betting_epoch)s,%(live_epoch)s,%(locked_at_chain_timestamp)s,%(locked_at_seconds_to_lock)s,
+                %(betting_epoch)s,%(live_epoch)s,%(strategy_version)s,%(locked_at_chain_timestamp)s,%(locked_at_seconds_to_lock)s,
                 %(signal)s,%(probability_up)s,%(probability_down)s,
                 %(raw_expected_coeff_up)s,%(raw_expected_coeff_down)s,%(payout_correction_up)s,%(payout_correction_down)s,
+                %(payout_bucket_up)s,%(payout_bucket_down)s,
                 %(expected_coeff_up)s,%(expected_coeff_down)s,
                 %(ev_up)s,%(ev_down)s,%(selected_ev)s,%(agreement)s,%(decision_quality)s,%(stake)s,%(bank_before)s,
                 %(components_json)s,%(weights_json)s,%(features_json)s,%(snapshot_json)s
@@ -561,13 +569,39 @@ def payout_calibration_history(limit: int = 300) -> list[dict[str, Any]]:
         return [dict(row) for row in cur.fetchall()]
 
 
+def strategy_performance() -> list[dict[str, Any]]:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COALESCE(strategy_version, 'legacy') AS strategy_version,
+                   COUNT(*) FILTER (WHERE settled=TRUE) AS trades,
+                   COUNT(*) FILTER (WHERE outcome='WIN') AS wins,
+                   COUNT(*) FILTER (WHERE outcome='LOSS') AS losses,
+                   COUNT(*) FILTER (WHERE outcome='DRAW') AS draws,
+                   COALESCE(SUM(pnl) FILTER (WHERE settled=TRUE), 0) AS profit,
+                   MIN(betting_epoch) AS first_epoch,
+                   MAX(betting_epoch) AS last_epoch
+            FROM fusion_decisions
+            GROUP BY COALESCE(strategy_version, 'legacy')
+            ORDER BY MIN(betting_epoch)
+            """
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+    for row in rows:
+        trades = int(row.get("trades") or 0)
+        wins = int(row.get("wins") or 0)
+        row["win_rate"] = wins / trades if trades else 0.0
+    return rows
+
+
 def export_csv() -> str:
     rows = decision_history(limit=settings.history_api_max_limit, ascending=True)
     output = io.StringIO()
     fields = [
-        "betting_epoch","signal","probability_up","probability_down",
+        "betting_epoch","strategy_version","signal","probability_up","probability_down",
         "raw_expected_coeff_up","raw_expected_coeff_down",
         "payout_correction_up","payout_correction_down",
+        "payout_bucket_up","payout_bucket_down",
         "expected_coeff_up","expected_coeff_down",
         "ev_up","ev_down","selected_ev","agreement","decision_quality","stake",
         "bank_before","bank_before_settlement","bank_after",

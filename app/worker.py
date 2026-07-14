@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any, Optional
 
-from . import db
+from . import __version__, db
 from .binance_client import BinanceClient
 from .config import settings
 from .ensemble import build_decision
@@ -89,6 +89,7 @@ def create_decision(snapshot, binance_data: Optional[dict[str, Any]] = None) -> 
     data = {
         "betting_epoch": snapshot.betting_epoch,
         "live_epoch": snapshot.live_epoch,
+        "strategy_version": __version__,
         "locked_at_chain_timestamp": snapshot.chain_timestamp,
         "locked_at_seconds_to_lock": snapshot.seconds_to_lock,
         # Kept as bank_before for backward API compatibility. Semantically

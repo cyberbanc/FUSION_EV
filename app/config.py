@@ -29,6 +29,17 @@ def _list(name: str, default: str) -> list[str]:
     return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
 
 
+def _float_tuple(name: str, default: str, expected: int) -> tuple[float, ...]:
+    values: list[float] = []
+    for item in _list(name, default):
+        try:
+            values.append(float(item))
+        except (TypeError, ValueError):
+            continue
+    fallback = tuple(float(item) for item in default.split(","))
+    return tuple(values) if len(values) == expected else fallback
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str = os.getenv("DATABASE_URL", "").strip()
@@ -57,38 +68,60 @@ class Settings:
     base_stake: float = _float("BASE_STAKE", 5.0)
     medium_stake: float = _float("MEDIUM_STAKE", 10.0)
     high_stake: float = _float("HIGH_STAKE", 15.0)
-    ev_medium_threshold: float = _float("EV_MEDIUM_THRESHOLD", 0.05)
-    ev_high_threshold: float = _float("EV_HIGH_THRESHOLD", 0.12)
+
+    # Variable stakes remain disabled by default during the independent v1.2 test.
+    variable_stake_enabled: bool = _bool("VARIABLE_STAKE_ENABLED", False)
+    ev_medium_threshold: float = _float("EV_MEDIUM_THRESHOLD", 0.30)
+    ev_high_threshold: float = _float("EV_HIGH_THRESHOLD", 0.50)
     medium_agreement: float = _float("MEDIUM_AGREEMENT", 0.60)
     high_agreement: float = _float("HIGH_AGREEMENT", 0.70)
-    min_trades_variable_stake: int = _int("MIN_TRADES_FOR_VARIABLE_STAKE", 200)
+    min_trades_medium_stake: int = _int(
+        "MIN_TRADES_MEDIUM_STAKE", _int("MIN_TRADES_FOR_VARIABLE_STAKE", 200)
+    )
+    min_trades_high_stake: int = _int("MIN_TRADES_HIGH_STAKE", 300)
     probability_shrink: float = _float("PROBABILITY_SHRINK", 0.75)
 
-    # Static pool-based haircut. This produces the raw payout estimate before
-    # the adaptive correction learned from completed rounds is applied.
+    # EV is trusted only when it is materially positive. A payout-driven choice
+    # against the more probable side needs an even larger edge and agreement.
+    strong_ev_threshold: float = _float("STRONG_EV_THRESHOLD", 0.30)
+    ev_reversal_min_ev: float = _float("EV_REVERSAL_MIN_EV", 0.35)
+    ev_reversal_min_agreement: float = _float(
+        "EV_REVERSAL_MIN_AGREEMENT", 0.30
+    )
+    crowd_binance_fallback_enabled: bool = _bool(
+        "CROWD_BINANCE_FALLBACK_ENABLED", True
+    )
+    fallback_component_margin: float = _float("FALLBACK_COMPONENT_MARGIN", 0.005)
+
+    # Static pool estimate before the adaptive bucket correction.
     payout_haircut: float = _float("PAYOUT_HAIRCUT", 0.85)
     payout_cap: float = _float("PAYOUT_CAP", 4.0)
     neutral_net_coefficient: float = _float("NEUTRAL_NET_COEFFICIENT", 1.94)
     min_pool_bnb: float = _float("MIN_POOL_BNB", 0.10)
     min_side_pool_bnb: float = _float("MIN_SIDE_POOL_BNB", 0.03)
 
-    # Adaptive payout calibration. During early history a deliberately
-    # conservative 0.75 multiplier is used. Once enough completed rounds are
-    # available, the multiplier is learned from a low quantile of actual/raw
-    # payout ratios, separately for UP and DOWN.
-    payout_initial_correction: float = _float("PAYOUT_INITIAL_CORRECTION", 0.75)
-    payout_calibration_lookback: int = _int("PAYOUT_CALIBRATION_LOOKBACK", 300)
-    payout_calibration_min_samples: int = _int("PAYOUT_CALIBRATION_MIN_SAMPLES", 50)
+    # v1.2 learns payout retention independently by side and raw coefficient
+    # band: <1.50, 1.50-2.00, 2.00-2.50, 2.50-3.00, >=3.00.
+    payout_bucket_edges: tuple[float, ...] = _float_tuple(
+        "PAYOUT_BUCKET_EDGES", "1.50,2.00,2.50,3.00", 4
+    )
+    payout_bucket_initial_up: tuple[float, ...] = _float_tuple(
+        "PAYOUT_BUCKET_INITIAL_UP", "0.90,0.82,0.72,0.65,0.60", 5
+    )
+    payout_bucket_initial_down: tuple[float, ...] = _float_tuple(
+        "PAYOUT_BUCKET_INITIAL_DOWN", "0.90,0.84,0.78,0.74,0.70", 5
+    )
+    payout_bucket_max_up: tuple[float, ...] = _float_tuple(
+        "PAYOUT_BUCKET_MAX_UP", "0.95,0.90,0.82,0.72,0.60", 5
+    )
+    payout_bucket_max_down: tuple[float, ...] = _float_tuple(
+        "PAYOUT_BUCKET_MAX_DOWN", "0.95,0.92,0.86,0.78,0.70", 5
+    )
+    payout_calibration_lookback: int = _int("PAYOUT_CALIBRATION_LOOKBACK", 500)
+    payout_bucket_min_samples: int = _int("PAYOUT_BUCKET_MIN_SAMPLES", 15)
     payout_calibration_quantile: float = _float("PAYOUT_CALIBRATION_QUANTILE", 0.25)
-    payout_correction_min: float = _float("PAYOUT_CORRECTION_MIN", 0.50)
-    payout_correction_max: float = _float("PAYOUT_CORRECTION_MAX", 0.90)
-
-    # A payout-driven contrarian choice must have enough model agreement and
-    # corrected EV. Otherwise every-round trading falls back to the more
-    # probable direction with the minimum stake.
-    low_agreement_threshold: float = _float("LOW_AGREEMENT_THRESHOLD", 0.20)
-    low_agreement_min_ev: float = _float("LOW_AGREEMENT_MIN_EV", 0.05)
-    negative_ev_probability_fallback: bool = _bool("NEGATIVE_EV_PROBABILITY_FALLBACK", True)
+    payout_correction_min: float = _float("PAYOUT_CORRECTION_MIN", 0.45)
+    payout_correction_max: float = _float("PAYOUT_CORRECTION_MAX", 0.95)
 
     binance_enabled: bool = _bool("BINANCE_ENABLED", True)
     binance_symbol: str = os.getenv("BINANCE_SYMBOL", "BNBUSDT").strip().upper()
@@ -101,11 +134,11 @@ class Settings:
     binance_timeout_seconds: float = _float("BINANCE_TIMEOUT_SECONDS", 6.0)
 
     weight_price: float = _float("WEIGHT_PRICE", 0.40)
-    weight_binance: float = _float("WEIGHT_BINANCE", 0.15)
-    weight_crowd: float = _float("WEIGHT_CROWD", 0.20)
-    weight_m9: float = _float("WEIGHT_M9", 0.20)
-    weight_pattern: float = _float("WEIGHT_PATTERN", 0.05)
-    adaptive_weight_lookback: int = _int("ADAPTIVE_WEIGHT_LOOKBACK", 300)
+    weight_binance: float = _float("WEIGHT_BINANCE", 0.25)
+    weight_crowd: float = _float("WEIGHT_CROWD", 0.35)
+    weight_m9: float = _float("WEIGHT_M9", 0.0)
+    weight_pattern: float = _float("WEIGHT_PATTERN", 0.0)
+    adaptive_weight_lookback: int = _int("ADAPTIVE_WEIGHT_LOOKBACK", 100)
     pattern_min_count: int = _int("PATTERN_MIN_COUNT", 20)
     pattern_max_length: int = _int("PATTERN_MAX_LENGTH", 5)
     m9_history_limit: int = _int("M9_HISTORY_LIMIT", 1200)

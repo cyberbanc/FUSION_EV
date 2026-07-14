@@ -1,3 +1,3 @@
-"""M9 FUSION EV paper-trading bot."""
+"""M9 FUSION EV package."""
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"

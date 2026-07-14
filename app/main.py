@@ -54,9 +54,10 @@ def root():
         "service": "m9-fusion-ev-paper-bot",
         "version": __version__,
         "mode": "PAPER",
-        "strategy": "probability ensemble plus adaptively calibrated payout-aware expected value",
+        "strategy": "strong-EV ensemble with bucketed payout calibration and Crowd+Binance fallback",
         "decision_lock": f"T-{settings.prelock_seconds}",
-        "stake_mode": [settings.base_stake, settings.medium_stake, settings.high_stake],
+        "stake_mode": [settings.base_stake] if not settings.variable_stake_enabled else [settings.base_stake, settings.medium_stake, settings.high_stake],
+        "variable_stake_enabled": settings.variable_stake_enabled,
         "real_transactions": False,
         "urls": {
             "health": "/health",
@@ -67,6 +68,7 @@ def root():
             "csv": "/history/export.csv",
             "model_performance": "/model/performance",
             "payout_calibration": "/payout/calibration",
+            "strategy_performance": "/strategy/performance",
         },
     }
 
@@ -82,13 +84,17 @@ def health():
         "pancake_connected": client.is_connected(),
         "rpc": client.rpc_status(),
         "worker_enabled": settings.worker_enabled,
+        "variable_stake_enabled": settings.variable_stake_enabled,
+        "strong_ev_threshold": settings.strong_ev_threshold,
+        "ev_reversal_min_ev": settings.ev_reversal_min_ev,
+        "ev_reversal_min_agreement": settings.ev_reversal_min_agreement,
         "worker": worker_status(),
         "data_sources": [
             "PancakeSwap Prediction rounds and pools",
             "Chainlink latestRoundData from Prediction oracle",
             "Binance public market-data REST when available",
-            "Bayesian M9 state history",
-            "stable multi-length patterns",
+            "Bayesian M9 diagnostics (zero voting weight by default)",
+            "pattern diagnostics (zero voting weight by default)",
         ],
     }
 
@@ -117,6 +123,8 @@ def signal(auto_lock: bool = True):
         "raw_expected_coeff_down": decision.get("raw_expected_coeff_down") if decision else None,
         "payout_correction_up": decision.get("payout_correction_up") if decision else None,
         "payout_correction_down": decision.get("payout_correction_down") if decision else None,
+        "payout_bucket_up": decision.get("payout_bucket_up") if decision else None,
+        "payout_bucket_down": decision.get("payout_bucket_down") if decision else None,
         "expected_coeff_up": decision.get("expected_coeff_up") if decision else snapshot.current_net_coeff_up,
         "expected_coeff_down": decision.get("expected_coeff_down") if decision else snapshot.current_net_coeff_down,
         "ev_up": decision.get("ev_up") if decision else None,
@@ -224,13 +232,22 @@ def snapshots(epoch: int):
 
 
 @app.get("/payout/calibration")
-def payout_calibration_status(limit: int = Query(300, ge=1, le=5000)):
+def payout_calibration_status(limit: int = Query(500, ge=1, le=5000)):
     rows = db.payout_calibration_history(limit)
     return {
         "ok": True,
         "version": __version__,
         "calibration": payout_calibration(rows),
         "history_rows": len(rows),
+    }
+
+
+@app.get("/strategy/performance")
+def strategy_performance():
+    return {
+        "ok": True,
+        "current_version": __version__,
+        "versions": db.strategy_performance(),
     }
 
 

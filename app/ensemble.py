@@ -346,32 +346,56 @@ def raw_conservative_coefficient(
     return clip(conservative, 1.01, settings.payout_cap)
 
 
-def payout_calibration(
-    history: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Learn conservative side-specific correction from completed rounds.
+def payout_bucket_index(raw_coefficient: float) -> int:
+    value = float(raw_coefficient)
+    for index, edge in enumerate(settings.payout_bucket_edges):
+        if value < edge:
+            return index
+    return len(settings.payout_bucket_edges)
 
-    Each historical row compares the raw coefficient available at decision time
-    with the coefficient implied by the final PancakeSwap pools. The lower
-    quantile is intentionally used so occasional very favourable payouts do not
-    make the forecast optimistic.
+
+def payout_bucket_name(index: int) -> str:
+    edges = settings.payout_bucket_edges
+    if index <= 0:
+        return f"< {edges[0]:.2f}"
+    if index >= len(edges):
+        return f">= {edges[-1]:.2f}"
+    return f"{edges[index - 1]:.2f}-{edges[index]:.2f}"
+
+
+def _bucket_prior(side: str, index: int) -> tuple[float, float]:
+    if side == "up":
+        initial = settings.payout_bucket_initial_up[index]
+        maximum = settings.payout_bucket_max_up[index]
+    else:
+        initial = settings.payout_bucket_initial_down[index]
+        maximum = settings.payout_bucket_max_down[index]
+    initial = clip(initial, settings.payout_correction_min, settings.payout_correction_max)
+    maximum = clip(maximum, settings.payout_correction_min, settings.payout_correction_max)
+    return min(initial, maximum), maximum
+
+
+def payout_calibration(history: list[dict[str, Any]]) -> dict[str, Any]:
+    """Learn payout retention by side and raw-coefficient bucket.
+
+    A single UP/DOWN correction was too optimistic for large T-40 coefficients.
+    v1.2 therefore learns five independent bands per side and uses a conservative
+    lower quantile. Sparse bands stay close to their safe prior.
     """
 
-    result: dict[str, Any] = {}
-    min_samples = max(1, settings.payout_calibration_min_samples)
-    initial = clip(
-        settings.payout_initial_correction,
-        settings.payout_correction_min,
-        settings.payout_correction_max,
-    )
+    bucket_count = len(settings.payout_bucket_edges) + 1
+    min_samples = max(1, settings.payout_bucket_min_samples)
+    result: dict[str, Any] = {
+        "bucket_edges": list(settings.payout_bucket_edges),
+        "minimum_samples_per_bucket": min_samples,
+        "lookback": len(history),
+    }
 
     for side in ("up", "down"):
-        ratios: list[float] = []
+        grouped: list[list[float]] = [[] for _ in range(bucket_count)]
         for row in history:
             raw = row.get(f"raw_expected_coeff_{side}")
             if raw is None:
-                # Compatibility with v1.0.x rows: old expected coefficient was
-                # the raw estimate because adaptive correction did not exist.
                 raw = row.get(f"expected_coeff_{side}")
             final = row.get(f"final_coeff_{side}")
             try:
@@ -382,42 +406,87 @@ def payout_calibration(
             if raw_value <= 1.0 or final_value <= 1.0:
                 continue
             ratio = final_value / raw_value
-            if math.isfinite(ratio):
-                ratios.append(clip(ratio, 0.25, 1.50))
+            if not math.isfinite(ratio):
+                continue
+            grouped[payout_bucket_index(raw_value)].append(clip(ratio, 0.20, 1.50))
 
-        learned = (
-            _quantile(ratios, settings.payout_calibration_quantile)
-            if ratios
-            else initial
-        )
-        learned = clip(
-            learned, settings.payout_correction_min, settings.payout_correction_max
-        )
-        readiness = min(1.0, len(ratios) / min_samples)
-        correction = initial + (learned - initial) * readiness
-        correction = clip(
-            correction, settings.payout_correction_min, settings.payout_correction_max
-        )
+        buckets: dict[str, Any] = {}
+        weighted_correction = 0.0
+        weighted_total = 0
+        total_samples = 0
+        ready_buckets = 0
+        for index, ratios in enumerate(grouped):
+            name = payout_bucket_name(index)
+            initial, maximum = _bucket_prior(side, index)
+            learned = (
+                _quantile(ratios, settings.payout_calibration_quantile)
+                if ratios
+                else initial
+            )
+            learned = clip(learned, settings.payout_correction_min, maximum)
+            readiness = min(1.0, len(ratios) / min_samples)
+            correction = initial + (learned - initial) * readiness
+            correction = clip(correction, settings.payout_correction_min, maximum)
+            ready = len(ratios) >= min_samples
+            total_samples += len(ratios)
+            ready_buckets += int(ready)
+            weight = max(1, len(ratios))
+            weighted_correction += correction * weight
+            weighted_total += weight
+            buckets[name] = {
+                "index": index,
+                "correction": correction,
+                "initial": initial,
+                "maximum": maximum,
+                "learned_quantile": learned,
+                "sample_count": len(ratios),
+                "ready": ready,
+                "readiness": readiness,
+            }
+
         result[side] = {
-            "correction": correction,
-            "learned_quantile": learned,
-            "sample_count": len(ratios),
-            "ready": len(ratios) >= min_samples,
-            "readiness": readiness,
+            # Compatibility summary for dashboards. Decisions use the bucket value.
+            "correction": weighted_correction / max(1, weighted_total),
+            "sample_count": total_samples,
+            "ready": total_samples >= min_samples,
+            "readiness": min(1.0, total_samples / min_samples),
+            "ready_buckets": ready_buckets,
+            "bucket_count": bucket_count,
+            "buckets": buckets,
         }
 
     result["ready"] = bool(result["up"]["ready"] and result["down"]["ready"])
-    result["minimum_samples"] = min_samples
-    result["lookback"] = len(history)
     return result
 
 
+def calibration_for_raw(
+    calibration: dict[str, Any], side: str, raw_coefficient: float
+) -> dict[str, Any]:
+    index = payout_bucket_index(raw_coefficient)
+    name = payout_bucket_name(index)
+    bucket = dict(calibration[side]["buckets"][name])
+    bucket["name"] = name
+    return bucket
+
+
 def apply_payout_correction(raw_coefficient: float, correction: float) -> float:
-    """Apply correction to the whole coefficient, never below 1.01."""
     corrected = float(raw_coefficient) * clip(
         correction, settings.payout_correction_min, settings.payout_correction_max
     )
     return clip(corrected, 1.01, min(settings.payout_cap, raw_coefficient))
+
+
+def _component_direction(
+    probability_up: Optional[float], available: bool
+) -> Optional[str]:
+    if not available or probability_up is None:
+        return None
+    margin = max(0.0, settings.fallback_component_margin)
+    if probability_up >= 0.5 + margin:
+        return "UP"
+    if probability_up <= 0.5 - margin:
+        return "DOWN"
+    return None
 
 
 def select_side_and_stake(
@@ -426,7 +495,12 @@ def select_side_and_stake(
     coeff_down: float,
     agreement_up: float,
     state: dict[str, Any],
-    payout_calibration_ready: bool = False,
+    payout_ready_up: bool = False,
+    payout_ready_down: bool = False,
+    crowd_probability_up: Optional[float] = None,
+    crowd_available: bool = False,
+    binance_probability_up: Optional[float] = None,
+    binance_available: bool = False,
 ) -> dict[str, Any]:
     probability_down = 1.0 - probability_up
     ev_up = probability_up * coeff_up - 1.0
@@ -442,58 +516,85 @@ def select_side_and_stake(
         ev_agreement = 1.0 - agreement_up
 
     probability_signal = "UP" if probability_up >= probability_down else "DOWN"
-    probability_signal_ev = ev_up if probability_signal == "UP" else ev_down
-    probability_signal_agreement = (
-        agreement_up if probability_signal == "UP" else 1.0 - agreement_up
+    crowd_direction = _component_direction(crowd_probability_up, crowd_available)
+    binance_direction = _component_direction(binance_probability_up, binance_available)
+    consensus_signal = (
+        crowd_direction
+        if settings.crowd_binance_fallback_enabled
+        and crowd_direction is not None
+        and crowd_direction == binance_direction
+        else None
     )
 
+    def values_for(side: str) -> tuple[float, float]:
+        if side == "UP":
+            return ev_up, agreement_up
+        return ev_down, 1.0 - agreement_up
+
     signal = ev_signal
-    selected_ev = ev_selected
-    agreement = ev_agreement
     selection_reason = "BEST_CORRECTED_EV"
 
-    if settings.negative_ev_probability_fallback and ev_selected < 0:
-        signal = probability_signal
-        selected_ev = probability_signal_ev
-        agreement = probability_signal_agreement
-        selection_reason = "NEGATIVE_EV_PROBABILITY_FALLBACK"
-    elif (
-        ev_signal != probability_signal
-        and ev_agreement < settings.low_agreement_threshold
-        and ev_selected < settings.low_agreement_min_ev
-    ):
-        signal = probability_signal
-        selected_ev = probability_signal_ev
-        agreement = probability_signal_agreement
-        selection_reason = "LOW_AGREEMENT_PROBABILITY_FALLBACK"
+    # Strong EV may lead. A contrarian EV reversal is held to a stricter bar.
+    if ev_selected >= settings.strong_ev_threshold:
+        if ev_signal != probability_signal and not (
+            ev_selected >= settings.ev_reversal_min_ev
+            and ev_agreement >= settings.ev_reversal_min_agreement
+        ):
+            signal = probability_signal
+            selection_reason = "EV_REVERSAL_BLOCKED_PROBABILITY_FALLBACK"
+    else:
+        # Weak/negative EV: use Crowd+Binance only when both independently agree.
+        if consensus_signal is not None:
+            signal = consensus_signal
+            selection_reason = "WEAK_EV_CROWD_BINANCE_FALLBACK"
+        else:
+            signal = probability_signal
+            selection_reason = (
+                "NEGATIVE_EV_PROBABILITY_FALLBACK"
+                if ev_selected < 0
+                else "WEAK_EV_PROBABILITY_FALLBACK"
+            )
+
+    selected_ev, agreement = values_for(signal)
+    selected_payout_ready = payout_ready_up if signal == "UP" else payout_ready_down
 
     trades = int(state.get("trades_count", 0) or 0)
     bank = float(state.get("bank", settings.start_bank) or settings.start_bank)
     stake = settings.base_stake
-    quality = "FORCED_MINIMUM" if selected_ev < 0 else "LOW_EDGE"
+    quality = "FORCED_MINIMUM" if selected_ev < 0 else "FIXED_STAKE"
 
-    variable_stake_ready = (
-        trades >= settings.min_trades_variable_stake and payout_calibration_ready
+    medium_ready = (
+        settings.variable_stake_enabled
+        and trades >= settings.min_trades_medium_stake
+        and selected_payout_ready
+        and selection_reason == "BEST_CORRECTED_EV"
     )
-    if variable_stake_ready:
-        if selected_ev >= settings.ev_high_threshold and agreement >= settings.high_agreement:
-            stake = settings.high_stake
-            quality = "HIGH_EDGE"
-        elif (
-            selected_ev >= settings.ev_medium_threshold
-            and agreement >= settings.medium_agreement
-        ):
-            stake = settings.medium_stake
-            quality = "MEDIUM_EDGE"
-    else:
-        if trades < settings.min_trades_variable_stake:
-            quality = "WARMUP_FIXED_STAKE" if selected_ev >= 0 else "WARMUP_FORCED_MINIMUM"
-        else:
-            quality = (
-                "PAYOUT_CALIBRATION_FIXED_STAKE"
-                if selected_ev >= 0
-                else "PAYOUT_CALIBRATION_FORCED_MINIMUM"
-            )
+    high_ready = medium_ready and trades >= settings.min_trades_high_stake
+
+    if (
+        high_ready
+        and selected_ev >= settings.ev_high_threshold
+        and agreement >= settings.high_agreement
+    ):
+        stake = settings.high_stake
+        quality = "HIGH_EDGE"
+    elif (
+        medium_ready
+        and selected_ev >= settings.ev_medium_threshold
+        and agreement >= settings.medium_agreement
+    ):
+        stake = settings.medium_stake
+        quality = "MEDIUM_EDGE"
+    elif not settings.variable_stake_enabled:
+        quality = "V1_2_FIXED_STAKE" if selected_ev >= 0 else "V1_2_FORCED_MINIMUM"
+    elif not selected_payout_ready:
+        quality = (
+            "PAYOUT_BUCKET_FIXED_STAKE"
+            if selected_ev >= 0
+            else "PAYOUT_BUCKET_FORCED_MINIMUM"
+        )
+    elif trades < settings.min_trades_medium_stake:
+        quality = "WARMUP_FIXED_STAKE" if selected_ev >= 0 else "WARMUP_FORCED_MINIMUM"
 
     if selection_reason != "BEST_CORRECTED_EV":
         quality += f"_{selection_reason}"
@@ -518,7 +619,9 @@ def select_side_and_stake(
         "selection_reason": selection_reason,
         "ev_candidate_signal": ev_signal,
         "probability_signal": probability_signal,
-        "variable_stake_ready": variable_stake_ready,
+        "crowd_binance_consensus": consensus_signal,
+        "selected_payout_bucket_ready": selected_payout_ready,
+        "variable_stake_ready": bool(medium_ready),
     }
 
 
@@ -535,9 +638,11 @@ def build_decision(
         price_component(snapshot, same_epoch_snapshots, rounds),
         binance_component(binance_data),
         crowd_component(snapshot, same_epoch_snapshots),
+        # Kept for diagnostics/history; default voting weights are zero in v1.2.
         m9_component(rounds),
         pattern_component(rounds),
     ]
+    component_by_name = {item.name: item for item in components}
     weights = adaptive_weights(components, settled_history)
     raw_probability = sum(
         weights.get(item.name, 0.0) * item.probability_up for item in components
@@ -561,27 +666,36 @@ def build_decision(
         snapshot.betting_bear_bnb,
     )
     calibration = payout_calibration(payout_history)
-    coeff_up = apply_payout_correction(
-        raw_coeff_up, float(calibration["up"]["correction"])
-    )
+    bucket_up = calibration_for_raw(calibration, "up", raw_coeff_up)
+    bucket_down = calibration_for_raw(calibration, "down", raw_coeff_down)
+    coeff_up = apply_payout_correction(raw_coeff_up, float(bucket_up["correction"]))
     coeff_down = apply_payout_correction(
-        raw_coeff_down, float(calibration["down"]["correction"])
+        raw_coeff_down, float(bucket_down["correction"])
     )
 
+    crowd = component_by_name["crowd"]
+    binance = component_by_name["binance"]
     choice = select_side_and_stake(
         probability_up,
         coeff_up,
         coeff_down,
         agreement_up,
         state,
-        payout_calibration_ready=bool(calibration["ready"]),
+        payout_ready_up=bool(bucket_up["ready"]),
+        payout_ready_down=bool(bucket_down["ready"]),
+        crowd_probability_up=crowd.probability_up,
+        crowd_available=crowd.available,
+        binance_probability_up=binance.probability_up,
+        binance_available=binance.available,
     )
     return {
         **choice,
         "raw_expected_coeff_up": raw_coeff_up,
         "raw_expected_coeff_down": raw_coeff_down,
-        "payout_correction_up": float(calibration["up"]["correction"]),
-        "payout_correction_down": float(calibration["down"]["correction"]),
+        "payout_correction_up": float(bucket_up["correction"]),
+        "payout_correction_down": float(bucket_down["correction"]),
+        "payout_bucket_up": str(bucket_up["name"]),
+        "payout_bucket_down": str(bucket_down["name"]),
         "expected_coeff_up": coeff_up,
         "expected_coeff_down": coeff_down,
         "components": [item.to_dict() for item in components],
@@ -596,7 +710,11 @@ def build_decision(
             "selection_reason": choice["selection_reason"],
             "ev_candidate_signal": choice["ev_candidate_signal"],
             "probability_signal": choice["probability_signal"],
+            "crowd_binance_consensus": choice["crowd_binance_consensus"],
+            "selected_payout_bucket_ready": choice["selected_payout_bucket_ready"],
             "variable_stake_ready": choice["variable_stake_ready"],
+            "payout_bucket_up": bucket_up,
+            "payout_bucket_down": bucket_down,
             "payout_calibration": calibration,
         },
     }
