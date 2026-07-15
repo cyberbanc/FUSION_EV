@@ -97,6 +97,8 @@ def init_db() -> None:
                 locked_at_chain_timestamp BIGINT NOT NULL,
                 locked_at_seconds_to_lock INTEGER NOT NULL,
                 signal TEXT NOT NULL CHECK (signal IN ('UP','DOWN')),
+                trade_executed BOOLEAN NOT NULL DEFAULT TRUE,
+                no_trade_reason TEXT,
                 probability_up DOUBLE PRECISION NOT NULL,
                 probability_down DOUBLE PRECISION NOT NULL,
                 raw_expected_coeff_up DOUBLE PRECISION,
@@ -151,6 +153,8 @@ def init_db() -> None:
             "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS final_coeff_down DOUBLE PRECISION",
             "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS actual_ev_signal DOUBLE PRECISION",
             "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_ratio_signal DOUBLE PRECISION",
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS trade_executed BOOLEAN NOT NULL DEFAULT TRUE",
+            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS no_trade_reason TEXT",
         ):
             cur.execute(statement)
 
@@ -372,7 +376,7 @@ def insert_decision(data: dict[str, Any]) -> bool:
             """
             INSERT INTO fusion_decisions(
                 betting_epoch,live_epoch,strategy_version,locked_at_chain_timestamp,locked_at_seconds_to_lock,
-                signal,probability_up,probability_down,
+                signal,trade_executed,no_trade_reason,probability_up,probability_down,
                 raw_expected_coeff_up,raw_expected_coeff_down,payout_correction_up,payout_correction_down,
                 payout_bucket_up,payout_bucket_down,
                 expected_coeff_up,expected_coeff_down,
@@ -380,7 +384,7 @@ def insert_decision(data: dict[str, Any]) -> bool:
                 components_json,weights_json,features_json,snapshot_json
             ) VALUES(
                 %(betting_epoch)s,%(live_epoch)s,%(strategy_version)s,%(locked_at_chain_timestamp)s,%(locked_at_seconds_to_lock)s,
-                %(signal)s,%(probability_up)s,%(probability_down)s,
+                %(signal)s,%(trade_executed)s,%(no_trade_reason)s,%(probability_up)s,%(probability_down)s,
                 %(raw_expected_coeff_up)s,%(raw_expected_coeff_down)s,%(payout_correction_up)s,%(payout_correction_down)s,
                 %(payout_bucket_up)s,%(payout_bucket_down)s,
                 %(expected_coeff_up)s,%(expected_coeff_down)s,
@@ -420,26 +424,39 @@ def _hypothetical_final_coefficients(row: RoundData) -> tuple[Optional[float], O
 
 def settle_decision_atomic(epoch: int, row: RoundData) -> bool:
     with connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM fusion_decisions WHERE betting_epoch=%s FOR UPDATE", (int(epoch),))
+        cur.execute(
+            "SELECT * FROM fusion_decisions WHERE betting_epoch=%s FOR UPDATE",
+            (int(epoch),),
+        )
         decision = cur.fetchone()
         if not decision or decision["settled"]:
             conn.rollback()
             return False
+
         cur.execute("SELECT * FROM fusion_state WHERE id=1 FOR UPDATE")
         state = cur.fetchone()
         signal = str(decision["signal"])
         winner = row.actual_winner or "DRAW"
-        stake = float(decision["stake"])
-        if winner == "DRAW":
+        trade_executed = bool(decision.get("trade_executed", True))
+        stake = float(decision["stake"] or 0.0)
+
+        if not trade_executed or stake <= 0:
+            outcome = "SKIP"
+            pnl = 0.0
+        elif winner == "DRAW":
             outcome = "DRAW"
             pnl = 0.0
         elif signal == winner:
             outcome = "WIN"
-            coeff = float(row.winner_coeff_net or ((row.winner_coeff_gross or 1.0) * (1-settings.treasury_fee)))
+            coeff = float(
+                row.winner_coeff_net
+                or ((row.winner_coeff_gross or 1.0) * (1 - settings.treasury_fee))
+            )
             pnl = stake * (coeff - 1.0)
         else:
             outcome = "LOSS"
             pnl = -stake
+
         bank_before = float(state["bank"])
         bank_after = bank_before + pnl
         final_coeff_up, final_coeff_down = _hypothetical_final_coefficients(row)
@@ -472,15 +489,29 @@ def settle_decision_atomic(epoch: int, row: RoundData) -> bool:
             and float(raw_selected_coeff) > 1.0
             else None
         )
-        wins = int(state["wins"]) + (1 if outcome == "WIN" else 0)
-        losses = int(state["losses"]) + (1 if outcome == "LOSS" else 0)
-        draws = int(state["draws"]) + (1 if outcome == "DRAW" else 0)
-        trades = int(state["trades_count"]) + 1
-        current_streak = int(state["current_loss_streak"]) + 1 if outcome == "LOSS" else 0
-        max_streak = max(int(state["max_loss_streak"]), current_streak)
-        peak_bank = max(float(state["peak_bank"]), bank_after)
-        drawdown = peak_bank - bank_after
-        max_drawdown = max(float(state["max_drawdown"]), drawdown)
+
+        if outcome == "SKIP":
+            wins = int(state["wins"])
+            losses = int(state["losses"])
+            draws = int(state["draws"])
+            trades = int(state["trades_count"])
+            current_streak = int(state["current_loss_streak"])
+            max_streak = int(state["max_loss_streak"])
+            peak_bank = float(state["peak_bank"])
+            max_drawdown = float(state["max_drawdown"])
+        else:
+            wins = int(state["wins"]) + (1 if outcome == "WIN" else 0)
+            losses = int(state["losses"]) + (1 if outcome == "LOSS" else 0)
+            draws = int(state["draws"]) + (1 if outcome == "DRAW" else 0)
+            trades = int(state["trades_count"]) + 1
+            current_streak = (
+                int(state["current_loss_streak"]) + 1 if outcome == "LOSS" else 0
+            )
+            max_streak = max(int(state["max_loss_streak"]), current_streak)
+            peak_bank = max(float(state["peak_bank"]), bank_after)
+            drawdown = peak_bank - bank_after
+            max_drawdown = max(float(state["max_drawdown"]), drawdown)
+
         cur.execute(
             """
             UPDATE fusion_decisions SET
@@ -493,9 +524,18 @@ def settle_decision_atomic(epoch: int, row: RoundData) -> bool:
             WHERE betting_epoch=%s
             """,
             (
-                winner,row.winner_coeff_gross,row.winner_coeff_net,row.move_points,
-                outcome,pnl,bank_before,bank_after,
-                final_coeff_up,final_coeff_down,actual_ev_signal,payout_ratio_signal,
+                winner,
+                row.winner_coeff_gross,
+                row.winner_coeff_net,
+                row.move_points,
+                outcome,
+                pnl,
+                bank_before,
+                bank_after,
+                final_coeff_up,
+                final_coeff_down,
+                actual_ev_signal,
+                payout_ratio_signal,
                 int(epoch),
             ),
         )
@@ -508,8 +548,16 @@ def settle_decision_atomic(epoch: int, row: RoundData) -> bool:
             WHERE id=1
             """,
             (
-                bank_after,wins,losses,draws,trades,current_streak,max_streak,
-                peak_bank,max_drawdown,int(epoch),
+                bank_after,
+                wins,
+                losses,
+                draws,
+                trades,
+                current_streak,
+                max_streak,
+                peak_bank,
+                max_drawdown,
+                int(epoch),
             ),
         )
         conn.commit()
@@ -574,11 +622,13 @@ def strategy_performance() -> list[dict[str, Any]]:
         cur.execute(
             """
             SELECT COALESCE(strategy_version, 'legacy') AS strategy_version,
-                   COUNT(*) FILTER (WHERE settled=TRUE) AS trades,
+                   COUNT(*) FILTER (WHERE settled=TRUE) AS decisions_settled,
+                   COUNT(*) FILTER (WHERE settled=TRUE AND trade_executed=TRUE) AS trades,
+                   COUNT(*) FILTER (WHERE outcome='SKIP') AS skipped,
                    COUNT(*) FILTER (WHERE outcome='WIN') AS wins,
                    COUNT(*) FILTER (WHERE outcome='LOSS') AS losses,
                    COUNT(*) FILTER (WHERE outcome='DRAW') AS draws,
-                   COALESCE(SUM(pnl) FILTER (WHERE settled=TRUE), 0) AS profit,
+                   COALESCE(SUM(pnl) FILTER (WHERE settled=TRUE AND trade_executed=TRUE), 0) AS profit,
                    MIN(betting_epoch) AS first_epoch,
                    MAX(betting_epoch) AS last_epoch
             FROM fusion_decisions
@@ -588,9 +638,11 @@ def strategy_performance() -> list[dict[str, Any]]:
         )
         rows = [dict(row) for row in cur.fetchall()]
     for row in rows:
+        decisions = int(row.get("decisions_settled") or 0)
         trades = int(row.get("trades") or 0)
         wins = int(row.get("wins") or 0)
         row["win_rate"] = wins / trades if trades else 0.0
+        row["trade_rate"] = trades / decisions if decisions else 0.0
     return rows
 
 
@@ -598,7 +650,7 @@ def export_csv() -> str:
     rows = decision_history(limit=settings.history_api_max_limit, ascending=True)
     output = io.StringIO()
     fields = [
-        "betting_epoch","strategy_version","signal","probability_up","probability_down",
+        "betting_epoch","strategy_version","signal","trade_executed","no_trade_reason","probability_up","probability_down",
         "raw_expected_coeff_up","raw_expected_coeff_down",
         "payout_correction_up","payout_correction_down",
         "payout_bucket_up","payout_bucket_down",

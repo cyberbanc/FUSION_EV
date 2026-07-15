@@ -58,7 +58,9 @@ def test_ev_reversal_below_35_percent_is_blocked():
     )
     assert result["signal"] == "UP"
     assert result["selection_reason"] == "EV_REVERSAL_BLOCKED_PROBABILITY_FALLBACK"
-    assert result["stake"] == 5.0
+    assert result["trade_executed"] is False
+    assert result["stake"] == 0.0
+    assert result["no_trade_reason"] == "EV_NOT_ABOVE_MINIMUM"
 
 
 def test_strong_ev_reversal_requires_ev_and_agreement_and_can_pass():
@@ -96,6 +98,8 @@ def test_weak_ev_uses_crowd_binance_consensus():
         coeff_down=2.10,  # best EV below 30%
         agreement_up=0.60,
         state={"trades_count": 50, "bank": 500},
+        payout_ready_up=True,
+        payout_ready_down=True,
         crowd_probability_up=0.47,
         crowd_available=True,
         binance_probability_up=0.48,
@@ -104,6 +108,8 @@ def test_weak_ev_uses_crowd_binance_consensus():
     assert result["signal"] == "DOWN"
     assert result["crowd_binance_consensus"] == "DOWN"
     assert result["selection_reason"] == "WEAK_EV_CROWD_BINANCE_FALLBACK"
+    assert result["trade_executed"] is False
+    assert result["stake"] == 0.0
 
 
 def test_weak_ev_without_consensus_uses_probability():
@@ -113,6 +119,8 @@ def test_weak_ev_without_consensus_uses_probability():
         coeff_down=2.20,
         agreement_up=0.60,
         state={"trades_count": 50, "bank": 500},
+        payout_ready_up=True,
+        payout_ready_down=True,
         crowd_probability_up=0.47,
         crowd_available=True,
         binance_probability_up=0.53,
@@ -120,6 +128,8 @@ def test_weak_ev_without_consensus_uses_probability():
     )
     assert result["signal"] == "UP"
     assert result["selection_reason"] == "WEAK_EV_PROBABILITY_FALLBACK"
+    assert result["trade_executed"] is True
+    assert result["stake"] == 10.0
 
 
 def test_bucket_priors_are_conservative_for_large_coefficients():
@@ -171,5 +181,37 @@ def test_variable_stakes_are_disabled_by_default():
         payout_ready_down=True,
     )
     assert result["selected_ev"] >= 0.50
-    assert result["stake"] == 5.0
+    assert result["stake"] == 10.0
     assert result["variable_stake_ready"] is False
+
+
+def test_positive_ev_trade_is_executed():
+    result = select_side_and_stake(
+        probability_up=0.54,
+        coeff_up=1.95,
+        coeff_down=1.80,
+        agreement_up=0.65,
+        state={"trades_count": 10, "bank": 500},
+        payout_ready_up=True,
+        payout_ready_down=True,
+    )
+    assert result["selected_ev"] > 0
+    assert result["trade_executed"] is True
+    assert result["stake"] == 10.0
+    assert result["no_trade_reason"] is None
+
+
+def test_positive_ev_waits_for_payout_bucket_when_required():
+    result = select_side_and_stake(
+        probability_up=0.54,
+        coeff_up=1.95,
+        coeff_down=1.80,
+        agreement_up=0.65,
+        state={"trades_count": 10, "bank": 500},
+        payout_ready_up=False,
+        payout_ready_down=False,
+    )
+    assert result["selected_ev"] > 0
+    assert result["trade_executed"] is False
+    assert result["stake"] == 0.0
+    assert result["no_trade_reason"] == "PAYOUT_BUCKET_NOT_READY"

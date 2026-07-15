@@ -65,9 +65,9 @@ class Settings:
 
     start_bank: float = _float("START_BANK", 500.0)
     treasury_fee: float = _float("TREASURY_FEE", 0.03)
-    base_stake: float = _float("BASE_STAKE", 5.0)
-    medium_stake: float = _float("MEDIUM_STAKE", 10.0)
-    high_stake: float = _float("HIGH_STAKE", 15.0)
+    base_stake: float = _float("BASE_STAKE", 10.0)
+    medium_stake: float = _float("MEDIUM_STAKE", 15.0)
+    high_stake: float = _float("HIGH_STAKE", 20.0)
 
     # Variable stakes remain disabled by default during the independent v1.2 test.
     variable_stake_enabled: bool = _bool("VARIABLE_STAKE_ENABLED", False)
@@ -92,6 +92,15 @@ class Settings:
         "CROWD_BINANCE_FALLBACK_ENABLED", True
     )
     fallback_component_margin: float = _float("FALLBACK_COMPONENT_MARGIN", 0.005)
+
+    # v1.3 removes the mandatory bet-every-round rule. A decision is still
+    # recorded every round for diagnostics and payout learning, but stake is
+    # zero unless the selected side has positive corrected EV.
+    trade_filter_enabled: bool = _bool("TRADE_FILTER_ENABLED", True)
+    min_trade_ev: float = _float("MIN_TRADE_EV", 0.0)
+    require_payout_bucket_ready: bool = _bool(
+        "REQUIRE_PAYOUT_BUCKET_READY", True
+    )
 
     # Static pool estimate before the adaptive bucket correction.
     payout_haircut: float = _float("PAYOUT_HAIRCUT", 0.85)

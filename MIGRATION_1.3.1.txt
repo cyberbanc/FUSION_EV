@@ -1,0 +1,32 @@
+M9 FUSION EV 1.3.1 — SELECTIVE / NO_TRADE
+
+1. Полностью замените файлы GitHub содержимым архива.
+2. PostgreSQL НЕ удаляйте и НЕ пересоздавайте.
+3. В Railway добавьте или обновите:
+
+TRADE_FILTER_ENABLED=true
+MIN_TRADE_EV=0.00
+REQUIRE_PAYOUT_BUCKET_READY=true
+
+4. Оставьте VARIABLE_STAKE_ENABLED=false.
+5. Выполните Redeploy и оставьте одну replica.
+
+Автоматическая миграция без очистки истории добавляет:
+- trade_executed
+- no_trade_reason
+
+Старые решения автоматически считаются исполненными ставками.
+Новые решения получают strategy_version=1.3.1.
+
+NO_TRADE:
+- stake=0
+- outcome=SKIP
+- банк и торговая статистика не меняются
+- данные раунда сохраняются для payout-калибровки
+
+Проверка после deploy:
+/health
+/signal
+/payout/calibration
+/strategy/performance
+/status?limit=30

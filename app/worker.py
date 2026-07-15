@@ -131,7 +131,14 @@ def tick() -> dict[str, Any]:
         "seconds_to_lock": snapshot.seconds_to_lock,
         "snapshot_saved": saved_snapshot,
         "decision_locked": bool(decision),
-        "decision_signal": decision.get("signal") if decision else None,
+        "trade_executed": (bool(decision.get("trade_executed", True)) if decision else None),
+        "decision_signal": (
+            decision.get("signal")
+            if decision and bool(decision.get("trade_executed", True))
+            else ("NO_TRADE" if decision else None)
+        ),
+        "analysis_signal": decision.get("signal") if decision else None,
+        "no_trade_reason": decision.get("no_trade_reason") if decision else None,
         "settled_now": settled,
         "bootstrap": bootstrap_result,
         "sync": sync_result,

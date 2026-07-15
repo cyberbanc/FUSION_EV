@@ -560,11 +560,23 @@ def select_side_and_stake(
 
     trades = int(state.get("trades_count", 0) or 0)
     bank = float(state.get("bank", settings.start_bank) or settings.start_bank)
-    stake = settings.base_stake
-    quality = "FORCED_MINIMUM" if selected_ev < 0 else "FIXED_STAKE"
+
+    trade_executed = True
+    no_trade_reason: Optional[str] = None
+    if settings.trade_filter_enabled:
+        if settings.require_payout_bucket_ready and not selected_payout_ready:
+            trade_executed = False
+            no_trade_reason = "PAYOUT_BUCKET_NOT_READY"
+        elif selected_ev <= settings.min_trade_ev:
+            trade_executed = False
+            no_trade_reason = "EV_NOT_ABOVE_MINIMUM"
+
+    stake = settings.base_stake if trade_executed else 0.0
+    quality = "V1_3_FIXED_STAKE" if trade_executed else f"V1_3_NO_TRADE_{no_trade_reason}"
 
     medium_ready = (
-        settings.variable_stake_enabled
+        trade_executed
+        and settings.variable_stake_enabled
         and trades >= settings.min_trades_medium_stake
         and selected_payout_ready
         and selection_reason == "BEST_CORRECTED_EV"
@@ -585,29 +597,26 @@ def select_side_and_stake(
     ):
         stake = settings.medium_stake
         quality = "MEDIUM_EDGE"
-    elif not settings.variable_stake_enabled:
-        quality = "V1_2_FIXED_STAKE" if selected_ev >= 0 else "V1_2_FORCED_MINIMUM"
-    elif not selected_payout_ready:
-        quality = (
-            "PAYOUT_BUCKET_FIXED_STAKE"
-            if selected_ev >= 0
-            else "PAYOUT_BUCKET_FORCED_MINIMUM"
-        )
-    elif trades < settings.min_trades_medium_stake:
-        quality = "WARMUP_FIXED_STAKE" if selected_ev >= 0 else "WARMUP_FORCED_MINIMUM"
+    elif trade_executed and not settings.variable_stake_enabled:
+        quality = "V1_3_FIXED_STAKE"
+    elif trade_executed and trades < settings.min_trades_medium_stake:
+        quality = "WARMUP_FIXED_STAKE"
 
     if selection_reason != "BEST_CORRECTED_EV":
         quality += f"_{selection_reason}"
 
-    if bank < 350:
-        stake = settings.base_stake
-        quality += "_BANK_LT_350"
-    elif bank < 400:
-        stake = min(stake, settings.medium_stake)
-        quality += "_BANK_LT_400"
+    if trade_executed:
+        if bank < 350:
+            stake = settings.base_stake
+            quality += "_BANK_LT_350"
+        elif bank < 400:
+            stake = min(stake, settings.medium_stake)
+            quality += "_BANK_LT_400"
 
     return {
         "signal": signal,
+        "trade_executed": trade_executed,
+        "no_trade_reason": no_trade_reason,
         "probability_up": probability_up,
         "probability_down": probability_down,
         "ev_up": ev_up,
@@ -713,6 +722,11 @@ def build_decision(
             "crowd_binance_consensus": choice["crowd_binance_consensus"],
             "selected_payout_bucket_ready": choice["selected_payout_bucket_ready"],
             "variable_stake_ready": choice["variable_stake_ready"],
+            "trade_executed": choice["trade_executed"],
+            "no_trade_reason": choice["no_trade_reason"],
+            "trade_filter_enabled": settings.trade_filter_enabled,
+            "min_trade_ev": settings.min_trade_ev,
+            "require_payout_bucket_ready": settings.require_payout_bucket_ready,
             "payout_bucket_up": bucket_up,
             "payout_bucket_down": bucket_down,
             "payout_calibration": calibration,

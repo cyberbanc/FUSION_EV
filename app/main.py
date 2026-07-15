@@ -54,10 +54,13 @@ def root():
         "service": "m9-fusion-ev-paper-bot",
         "version": __version__,
         "mode": "PAPER",
-        "strategy": "strong-EV ensemble with bucketed payout calibration and Crowd+Binance fallback",
+        "strategy": "selective-EV paper trading with NO_TRADE on non-positive corrected EV",
         "decision_lock": f"T-{settings.prelock_seconds}",
         "stake_mode": [settings.base_stake] if not settings.variable_stake_enabled else [settings.base_stake, settings.medium_stake, settings.high_stake],
         "variable_stake_enabled": settings.variable_stake_enabled,
+        "trade_filter_enabled": settings.trade_filter_enabled,
+        "min_trade_ev": settings.min_trade_ev,
+        "require_payout_bucket_ready": settings.require_payout_bucket_ready,
         "real_transactions": False,
         "urls": {
             "health": "/health",
@@ -88,6 +91,9 @@ def health():
         "strong_ev_threshold": settings.strong_ev_threshold,
         "ev_reversal_min_ev": settings.ev_reversal_min_ev,
         "ev_reversal_min_agreement": settings.ev_reversal_min_agreement,
+        "trade_filter_enabled": settings.trade_filter_enabled,
+        "min_trade_ev": settings.min_trade_ev,
+        "require_payout_bucket_ready": settings.require_payout_bucket_ready,
         "worker": worker_status(),
         "data_sources": [
             "PancakeSwap Prediction rounds and pools",
@@ -107,16 +113,26 @@ def signal(auto_lock: bool = True):
     decision = db.get_decision(snapshot.betting_epoch)
     if decision is None and auto_lock and snapshot.decision_window:
         decision = create_decision(snapshot)
+    trade_executed = bool(decision.get("trade_executed", True)) if decision else False
+    public_signal = (
+        decision.get("signal") if decision and trade_executed else ("NO_TRADE" if decision else None)
+    )
+    public_status = (
+        "WAIT" if decision is None else ("LOCKED" if trade_executed else "NO_TRADE")
+    )
     return {
         "ok": True,
-        "status": "LOCKED" if decision else "WAIT",
+        "status": public_status,
         "decision_locked": bool(decision),
+        "trade_executed": trade_executed if decision else None,
+        "no_trade_reason": decision.get("no_trade_reason") if decision else None,
         "betting_epoch": snapshot.betting_epoch,
         "live_epoch": snapshot.live_epoch,
         "seconds_to_lock": snapshot.seconds_to_lock,
         "decision_window": snapshot.decision_window,
-        "signal": decision.get("signal") if decision else None,
-        "stake": decision.get("stake") if decision else settings.base_stake,
+        "signal": public_signal,
+        "analysis_signal": decision.get("signal") if decision else None,
+        "stake": decision.get("stake") if decision else 0.0,
         "probability_up": decision.get("probability_up") if decision else None,
         "probability_down": decision.get("probability_down") if decision else None,
         "raw_expected_coeff_up": decision.get("raw_expected_coeff_up") if decision else None,
