@@ -556,7 +556,17 @@ def select_side_and_stake(
             )
 
     selected_ev, agreement = values_for(signal)
+    selected_expected_coeff = coeff_up if signal == "UP" else coeff_down
     selected_payout_ready = payout_ready_up if signal == "UP" else payout_ready_down
+
+    normal_ev_pass = selected_ev > settings.min_trade_ev
+    consensus_override_eligible = (
+        settings.consensus_override_enabled
+        and selection_reason == "WEAK_EV_CROWD_BINANCE_FALLBACK"
+        and consensus_signal in {"UP", "DOWN"}
+        and consensus_signal == signal
+        and selected_expected_coeff >= settings.consensus_override_min_coeff
+    )
 
     trades = int(state.get("trades_count", 0) or 0)
     bank = float(state.get("bank", settings.start_bank) or settings.start_bank)
@@ -567,12 +577,27 @@ def select_side_and_stake(
         if settings.require_payout_bucket_ready and not selected_payout_ready:
             trade_executed = False
             no_trade_reason = "PAYOUT_BUCKET_NOT_READY"
-        elif selected_ev <= settings.min_trade_ev:
+        elif not normal_ev_pass and not consensus_override_eligible:
             trade_executed = False
             no_trade_reason = "EV_NOT_ABOVE_MINIMUM"
 
-    stake = settings.base_stake if trade_executed else 0.0
-    quality = "V1_3_FIXED_STAKE" if trade_executed else f"V1_3_NO_TRADE_{no_trade_reason}"
+    consensus_override_applied = (
+        trade_executed
+        and settings.trade_filter_enabled
+        and not normal_ev_pass
+        and consensus_override_eligible
+    )
+
+    if consensus_override_applied:
+        stake = settings.consensus_override_stake_usd
+        quality = "V1_3_2_FIXED_STAKE_CROWD_BINANCE_OVERRIDE"
+    else:
+        stake = settings.base_stake if trade_executed else 0.0
+        quality = (
+            "V1_3_2_FIXED_STAKE"
+            if trade_executed
+            else f"V1_3_2_NO_TRADE_{no_trade_reason}"
+        )
 
     medium_ready = (
         trade_executed
@@ -597,12 +622,23 @@ def select_side_and_stake(
     ):
         stake = settings.medium_stake
         quality = "MEDIUM_EDGE"
-    elif trade_executed and not settings.variable_stake_enabled:
-        quality = "V1_3_FIXED_STAKE"
-    elif trade_executed and trades < settings.min_trades_medium_stake:
+    elif (
+        trade_executed
+        and not settings.variable_stake_enabled
+        and not consensus_override_applied
+    ):
+        quality = "V1_3_2_FIXED_STAKE"
+    elif (
+        trade_executed
+        and trades < settings.min_trades_medium_stake
+        and not consensus_override_applied
+    ):
         quality = "WARMUP_FIXED_STAKE"
 
-    if selection_reason != "BEST_CORRECTED_EV":
+    if (
+        selection_reason != "BEST_CORRECTED_EV"
+        and not consensus_override_applied
+    ):
         quality += f"_{selection_reason}"
 
     if trade_executed:
@@ -629,6 +665,19 @@ def select_side_and_stake(
         "ev_candidate_signal": ev_signal,
         "probability_signal": probability_signal,
         "crowd_binance_consensus": consensus_signal,
+        "selected_expected_coeff": selected_expected_coeff,
+        "normal_ev_pass": normal_ev_pass,
+        "consensus_override_eligible": consensus_override_eligible,
+        "crowd_binance_override": consensus_override_applied,
+        "trade_rule": (
+            "CROWD_BINANCE_OVERRIDE"
+            if consensus_override_applied
+            else (
+                "FILTER_DISABLED"
+                if trade_executed and not settings.trade_filter_enabled
+                else ("NORMAL_EV_FILTER" if trade_executed else "NO_TRADE")
+            )
+        ),
         "selected_payout_bucket_ready": selected_payout_ready,
         "variable_stake_ready": bool(medium_ready),
     }
@@ -720,6 +769,14 @@ def build_decision(
             "ev_candidate_signal": choice["ev_candidate_signal"],
             "probability_signal": choice["probability_signal"],
             "crowd_binance_consensus": choice["crowd_binance_consensus"],
+            "selected_expected_coeff": choice["selected_expected_coeff"],
+            "normal_ev_pass": choice["normal_ev_pass"],
+            "consensus_override_eligible": choice["consensus_override_eligible"],
+            "crowd_binance_override": choice["crowd_binance_override"],
+            "trade_rule": choice["trade_rule"],
+            "consensus_override_enabled": settings.consensus_override_enabled,
+            "consensus_override_min_coeff": settings.consensus_override_min_coeff,
+            "consensus_override_stake_usd": settings.consensus_override_stake_usd,
             "selected_payout_bucket_ready": choice["selected_payout_bucket_ready"],
             "variable_stake_ready": choice["variable_stake_ready"],
             "trade_executed": choice["trade_executed"],

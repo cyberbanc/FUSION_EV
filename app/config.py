@@ -93,11 +93,24 @@ class Settings:
     )
     fallback_component_margin: float = _float("FALLBACK_COMPONENT_MARGIN", 0.005)
 
-    # v1.3 removes the mandatory bet-every-round rule. A decision is still
-    # recorded every round for diagnostics and payout learning, but stake is
-    # zero unless the selected side has positive corrected EV.
+    # v1.3.2: Crowd+Binance consensus may bypass only the EV threshold when
+    # the selected corrected coefficient is high enough. Payout-bucket
+    # readiness remains mandatory when REQUIRE_PAYOUT_BUCKET_READY=true.
+    consensus_override_enabled: bool = _bool(
+        "CONSENSUS_OVERRIDE_ENABLED", True
+    )
+    consensus_override_min_coeff: float = _float(
+        "CONSENSUS_OVERRIDE_MIN_COEFF", 1.40
+    )
+    consensus_override_stake_usd: float = _float(
+        "CONSENSUS_OVERRIDE_STAKE_USD", 10.0
+    )
+
+    # A decision is recorded every round for diagnostics and payout learning.
+    # The normal path trades only above MIN_TRADE_EV; v1.3.2 may additionally
+    # use the narrowly scoped Crowd+Binance consensus override.
     trade_filter_enabled: bool = _bool("TRADE_FILTER_ENABLED", True)
-    min_trade_ev: float = _float("MIN_TRADE_EV", 0.0)
+    min_trade_ev: float = _float("MIN_TRADE_EV", -0.10)
     require_payout_bucket_ready: bool = _bool(
         "REQUIRE_PAYOUT_BUCKET_READY", True
     )

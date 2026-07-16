@@ -54,13 +54,16 @@ def root():
         "service": "m9-fusion-ev-paper-bot",
         "version": __version__,
         "mode": "PAPER",
-        "strategy": "selective-EV paper trading with NO_TRADE on non-positive corrected EV",
+        "strategy": "selective EV filter plus Crowd+Binance consensus override",
         "decision_lock": f"T-{settings.prelock_seconds}",
         "stake_mode": [settings.base_stake] if not settings.variable_stake_enabled else [settings.base_stake, settings.medium_stake, settings.high_stake],
         "variable_stake_enabled": settings.variable_stake_enabled,
         "trade_filter_enabled": settings.trade_filter_enabled,
         "min_trade_ev": settings.min_trade_ev,
         "require_payout_bucket_ready": settings.require_payout_bucket_ready,
+        "consensus_override_enabled": settings.consensus_override_enabled,
+        "consensus_override_min_coeff": settings.consensus_override_min_coeff,
+        "consensus_override_stake_usd": settings.consensus_override_stake_usd,
         "real_transactions": False,
         "urls": {
             "health": "/health",
@@ -94,6 +97,9 @@ def health():
         "trade_filter_enabled": settings.trade_filter_enabled,
         "min_trade_ev": settings.min_trade_ev,
         "require_payout_bucket_ready": settings.require_payout_bucket_ready,
+        "consensus_override_enabled": settings.consensus_override_enabled,
+        "consensus_override_min_coeff": settings.consensus_override_min_coeff,
+        "consensus_override_stake_usd": settings.consensus_override_stake_usd,
         "worker": worker_status(),
         "data_sources": [
             "PancakeSwap Prediction rounds and pools",
@@ -120,6 +126,7 @@ def signal(auto_lock: bool = True):
     public_status = (
         "WAIT" if decision is None else ("LOCKED" if trade_executed else "NO_TRADE")
     )
+    features = (decision.get("features_json") or {}) if decision else {}
     return {
         "ok": True,
         "status": public_status,
@@ -147,6 +154,13 @@ def signal(auto_lock: bool = True):
         "ev_down": decision.get("ev_down") if decision else None,
         "selected_ev": decision.get("selected_ev") if decision else None,
         "agreement": decision.get("agreement") if decision else None,
+        "selection_reason": features.get("selection_reason"),
+        "crowd_binance_consensus": features.get("crowd_binance_consensus"),
+        "selected_expected_coeff": features.get("selected_expected_coeff"),
+        "normal_ev_pass": features.get("normal_ev_pass"),
+        "consensus_override_eligible": features.get("consensus_override_eligible"),
+        "crowd_binance_override": features.get("crowd_binance_override"),
+        "trade_rule": features.get("trade_rule"),
         "decision_quality": decision.get("decision_quality") if decision else "WAIT_T_MINUS_40",
         "components": decision.get("components_json") if decision else None,
         "weights": decision.get("weights_json") if decision else None,

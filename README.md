@@ -1,87 +1,68 @@
-# M9 FUSION EV 1.3.1 — selective paper bot
+# M9 FUSION EV 1.3.2 — Crowd + Binance consensus override
 
-Paper-бот для PancakeSwap Prediction BNB. Решение фиксируется примерно в T−40, но ставка больше не обязательна каждый раунд.
+Paper-бот для PancakeSwap Prediction BNB. Решение фиксируется примерно в T−40. Бот сохраняет анализ каждого раунда и делает paper-ставку только при прохождении обычного EV-фильтра либо специального подтверждённого правила Crowd + Binance.
 
-## Главное изменение 1.3.1
+## Главное изменение 1.3.2
 
-Бот продолжает анализировать и сохранять каждый раунд, однако делает ставку только когда выбранная сторона имеет положительный скорректированный EV и payout-bucket готов.
+Версия 1.3.2 сохраняет фильтр версии 1.3.1, но добавляет отдельное исключение:
 
-По умолчанию:
+```text
+selection_reason = WEAK_EV_CROWD_BINANCE_FALLBACK
+Crowd и Binance согласны с итоговым signal
+selected_expected_coeff >= 1.40
+выбранный payout bucket готов
+    → BET $10, даже если selected_ev <= MIN_TRADE_EV
+```
+
+Исключение обходится **только порог EV**. Оно не отключает проверку готовности payout-bucket и не применяется к `NEGATIVE_EV_PROBABILITY_FALLBACK` или обычному `WEAK_EV_PROBABILITY_FALLBACK`.
+
+## Основные Railway Variables
 
 ```text
 TRADE_FILTER_ENABLED=true
-MIN_TRADE_EV=0.00
+MIN_TRADE_EV=-0.10
 REQUIRE_PAYOUT_BUCKET_READY=true
+CONSENSUS_OVERRIDE_ENABLED=true
+CONSENSUS_OVERRIDE_MIN_COEFF=1.40
+CONSENSUS_OVERRIDE_STAKE_USD=10
 ```
 
-Логика исполнения:
+Полный набор находится в `RAILWAY_VARIABLES.txt`.
+
+## Логика сделки
 
 ```text
-selected_ev > MIN_TRADE_EV
-и выбранный payout bucket готов
-    → BET, ставка $5
-иначе
-    → NO_TRADE, ставка $0
+1. Если payout bucket не готов → NO_TRADE.
+2. Если selected_ev > MIN_TRADE_EV → обычная ставка BASE_STAKE.
+3. Иначе, если Crowd + Binance consensus override выполнен → ставка $10.
+4. Иначе → NO_TRADE.
 ```
 
-`MIN_TRADE_EV=0.00` означает строго положительный EV. При `selected_ev=0` ставка не делается.
-
-## Что происходит при NO_TRADE
-
-- решение и все компоненты сохраняются в PostgreSQL;
-- `signal` внутри истории остаётся аналитическим направлением UP/DOWN;
-- `/signal` возвращает публичный `signal: "NO_TRADE"`;
-- отдельно возвращается `analysis_signal: "UP"` или `"DOWN"`;
-- `stake=0`;
-- после завершения раунда `outcome="SKIP"`;
-- банк, wins, losses, draws и trades_count не изменяются;
-- серия проигрышей не увеличивается и не сбрасывается;
-- финальные коэффициенты всё равно сохраняются для дальнейшей payout-калибровки и оценки моделей.
-
-## Почему выбран именно такой фильтр
-
-На полной истории 1.2.0:
+Для новой сделки в `features_json` сохраняются:
 
 ```text
-selected_ev > 0:   26 ставок, результат +$55.42
-selected_ev <= 0: 151 ставок, результат -$84.94
+selected_expected_coeff
+normal_ev_pass
+consensus_override_eligible
+crowd_binance_override
+trade_rule
+consensus_override_enabled
+consensus_override_min_coeff
+consensus_override_stake_usd
 ```
 
-Это ретроспективный результат на уже просмотренной выборке и не гарантирует будущую прибыль. Версия 1.3.1 нужна для независимого paper-теста selective-режима.
-
-## Остальная логика сохранена
-
-- payout-калибровка отдельно для UP/DOWN и пяти диапазонов коэффициента;
-- Price, Binance и Crowd участвуют в ансамбле;
-- M9 и паттерны сохраняются для диагностики с нулевым весом по умолчанию;
-- EV-разворот и Crowd+Binance fallback сохранены;
-- variable stakes отключены;
-- реальные транзакции отсутствуют.
-
-## Ставки
+Значения `trade_rule`:
 
 ```text
-VARIABLE_STAKE_ENABLED=false
-BASE_STAKE=10
+NORMAL_EV_FILTER
+CROWD_BINANCE_OVERRIDE
+NO_TRADE
 ```
-
-Исполненная ставка всегда `$5`. Пропущенный раунд имеет `$0`.
-
-## История и миграция
-
-PostgreSQL удалять или пересоздавать не нужно. При запуске автоматически добавляются:
-
-```text
-trade_executed BOOLEAN NOT NULL DEFAULT TRUE
-no_trade_reason TEXT
-```
-
-Все старые сделки получают `trade_executed=true`, поэтому прежняя статистика сохраняется без изменения.
 
 Новые решения маркируются:
 
 ```text
-strategy_version=1.3.1
+strategy_version=1.3.2
 ```
 
 ## API
@@ -97,37 +78,36 @@ strategy_version=1.3.1
 /strategy/performance
 ```
 
-Пример NO_TRADE в `/signal`:
+`/signal` дополнительно показывает причину выбора и применение нового правила:
 
 ```json
 {
-  "status": "NO_TRADE",
-  "decision_locked": true,
-  "trade_executed": false,
-  "no_trade_reason": "EV_NOT_ABOVE_MINIMUM",
-  "signal": "NO_TRADE",
-  "analysis_signal": "UP",
-  "stake": 0.0,
-  "selected_ev": -0.12
+  "selection_reason": "WEAK_EV_CROWD_BINANCE_FALLBACK",
+  "crowd_binance_consensus": "DOWN",
+  "selected_expected_coeff": 1.63,
+  "normal_ev_pass": false,
+  "consensus_override_eligible": true,
+  "crowd_binance_override": true,
+  "trade_rule": "CROWD_BINANCE_OVERRIDE",
+  "trade_executed": true,
+  "stake": 10.0
 }
 ```
 
-`/strategy/performance` теперь показывает отдельно:
+## История и база
 
-- `decisions_settled` — сколько раундов проанализировано;
-- `trades` — сколько реальных paper-ставок исполнено;
-- `skipped` — сколько раундов пропущено;
-- `trade_rate` — долю раундов со ставкой;
-- `wins`, `losses`, `win_rate`, `profit` — только по исполненным ставкам.
+PostgreSQL удалять или пересоздавать не нужно. Новых колонок не требуется: диагностические поля сохраняются внутри существующего `features_json`. Старая история остаётся на месте и отделяется по `strategy_version`.
 
-## Обновление
+## Обновление GitHub и Railway
 
-1. Полностью замените файлы GitHub.
-2. PostgreSQL не удаляйте.
-3. Добавьте три новые Railway Variables либо замените набор целиком из `RAILWAY_VARIABLES.txt`.
-4. Оставьте одну replica.
-5. Выполните Redeploy.
-6. Проверьте `/health`, затем `/signal` в окне T−40 и `/strategy/performance` после закрытия нескольких раундов.
+1. Распакуйте ZIP.
+2. Полностью замените файлы текущего GitHub-репозитория содержимым папки.
+3. PostgreSQL в Railway не удаляйте.
+4. В Railway замените или проверьте Variables по `RAILWAY_VARIABLES.txt`.
+5. Оставьте одну replica.
+6. Выполните Redeploy.
+7. Проверьте `/health`: версия должна быть `1.3.2`.
+8. В окне T−40 проверьте `/signal` и поля `trade_rule`, `selected_expected_coeff`, `crowd_binance_override`.
 
 ## Режим
 

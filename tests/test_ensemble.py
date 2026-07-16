@@ -94,8 +94,8 @@ def test_strong_ev_reversal_with_low_agreement_is_blocked():
 def test_weak_ev_uses_crowd_binance_consensus():
     result = select_side_and_stake(
         probability_up=0.54,
-        coeff_up=1.80,
-        coeff_down=2.10,  # best EV below 30%
+        coeff_up=1.50,
+        coeff_down=1.80,  # selected DOWN EV is below MIN_TRADE_EV=-0.10
         agreement_up=0.60,
         state={"trades_count": 50, "bank": 500},
         payout_ready_up=True,
@@ -108,8 +108,73 @@ def test_weak_ev_uses_crowd_binance_consensus():
     assert result["signal"] == "DOWN"
     assert result["crowd_binance_consensus"] == "DOWN"
     assert result["selection_reason"] == "WEAK_EV_CROWD_BINANCE_FALLBACK"
+    assert result["selected_expected_coeff"] == 1.80
+    assert result["crowd_binance_override"] is True
+    assert result["trade_rule"] == "CROWD_BINANCE_OVERRIDE"
+    assert result["trade_executed"] is True
+    assert result["stake"] == 10.0
+
+
+def test_consensus_override_does_not_bypass_minimum_coefficient():
+    result = select_side_and_stake(
+        probability_up=0.54,
+        coeff_up=1.50,
+        coeff_down=1.39,
+        agreement_up=0.60,
+        state={"trades_count": 50, "bank": 500},
+        payout_ready_up=True,
+        payout_ready_down=True,
+        crowd_probability_up=0.47,
+        crowd_available=True,
+        binance_probability_up=0.48,
+        binance_available=True,
+    )
+    assert result["selection_reason"] == "WEAK_EV_CROWD_BINANCE_FALLBACK"
+    assert result["selected_expected_coeff"] == 1.39
+    assert result["crowd_binance_override"] is False
     assert result["trade_executed"] is False
-    assert result["stake"] == 0.0
+    assert result["no_trade_reason"] == "EV_NOT_ABOVE_MINIMUM"
+
+
+def test_consensus_override_does_not_bypass_payout_readiness():
+    result = select_side_and_stake(
+        probability_up=0.54,
+        coeff_up=1.50,
+        coeff_down=1.80,
+        agreement_up=0.60,
+        state={"trades_count": 50, "bank": 500},
+        payout_ready_up=True,
+        payout_ready_down=False,
+        crowd_probability_up=0.47,
+        crowd_available=True,
+        binance_probability_up=0.48,
+        binance_available=True,
+    )
+    assert result["consensus_override_eligible"] is True
+    assert result["crowd_binance_override"] is False
+    assert result["trade_executed"] is False
+    assert result["no_trade_reason"] == "PAYOUT_BUCKET_NOT_READY"
+
+
+def test_probability_fallback_never_uses_consensus_override():
+    result = select_side_and_stake(
+        probability_up=0.54,
+        coeff_up=1.50,
+        coeff_down=1.80,
+        agreement_up=0.60,
+        state={"trades_count": 50, "bank": 500},
+        payout_ready_up=True,
+        payout_ready_down=True,
+        crowd_probability_up=0.47,
+        crowd_available=True,
+        binance_probability_up=0.53,
+        binance_available=True,
+    )
+    assert result["selection_reason"] == "NEGATIVE_EV_PROBABILITY_FALLBACK"
+    assert result["consensus_override_eligible"] is False
+    assert result["crowd_binance_override"] is False
+    assert result["trade_executed"] is False
+    assert result["no_trade_reason"] == "EV_NOT_ABOVE_MINIMUM"
 
 
 def test_weak_ev_without_consensus_uses_probability():
