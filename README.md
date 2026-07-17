@@ -1,30 +1,34 @@
-# M9 FUSION EV 1.3.2 — Crowd + Binance consensus override
+# M9 FUSION EV 1.3.3 — Negative fallback filter
 
-Paper-бот для PancakeSwap Prediction BNB. Решение фиксируется примерно в T−40. Бот сохраняет анализ каждого раунда и делает paper-ставку только при прохождении обычного EV-фильтра либо специального подтверждённого правила Crowd + Binance.
+Paper-бот для PancakeSwap Prediction BNB. Решение фиксируется примерно в T−40. Версия 1.3.3 полностью сохраняет архитектуру 1.3.2 и добавляет отдельную блокировку убыточной категории `NEGATIVE_EV_PROBABILITY_FALLBACK`.
 
-## Главное изменение 1.3.2
-
-Версия 1.3.2 сохраняет фильтр версии 1.3.1, но добавляет отдельное исключение:
+## Главное изменение 1.3.3
 
 ```text
-selection_reason = WEAK_EV_CROWD_BINANCE_FALLBACK
-Crowd и Binance согласны с итоговым signal
-selected_expected_coeff >= 1.40
-выбранный payout bucket готов
-    → BET $10, даже если selected_ev <= MIN_TRADE_EV
+selection_reason = NEGATIVE_EV_PROBABILITY_FALLBACK
+NEGATIVE_FALLBACK_ENABLED=false
+    → NO_TRADE, даже если selected_ev > MIN_TRADE_EV
 ```
 
-Исключение обходится **только порог EV**. Оно не отключает проверку готовности payout-bucket и не применяется к `NEGATIVE_EV_PROBABILITY_FALLBACK` или обычному `WEAK_EV_PROBABILITY_FALLBACK`.
+Другие категории не блокируются этим правилом:
+
+```text
+WEAK_EV_CROWD_BINANCE_FALLBACK
+WEAK_EV_PROBABILITY_FALLBACK
+BEST_CORRECTED_EV
+EV_REVERSAL_BLOCKED_PROBABILITY_FALLBACK
+```
+
+Они продолжают использовать обычный EV-фильтр и проверку payout bucket.
 
 ## Основные Railway Variables
 
 ```text
 TRADE_FILTER_ENABLED=true
 MIN_TRADE_EV=-0.10
+NEGATIVE_FALLBACK_ENABLED=false
 REQUIRE_PAYOUT_BUCKET_READY=true
-CONSENSUS_OVERRIDE_ENABLED=true
-CONSENSUS_OVERRIDE_MIN_COEFF=1.40
-CONSENSUS_OVERRIDE_STAKE_USD=10
+CONSENSUS_OVERRIDE_ENABLED=false
 ```
 
 Полный набор находится в `RAILWAY_VARIABLES.txt`.
@@ -32,38 +36,44 @@ CONSENSUS_OVERRIDE_STAKE_USD=10
 ## Логика сделки
 
 ```text
-1. Если payout bucket не готов → NO_TRADE.
-2. Если selected_ev > MIN_TRADE_EV → обычная ставка BASE_STAKE.
-3. Иначе, если Crowd + Binance consensus override выполнен → ставка $10.
-4. Иначе → NO_TRADE.
+1. Если выбранный payout bucket не готов → NO_TRADE.
+2. Если NEGATIVE_EV_PROBABILITY_FALLBACK отключён → NO_TRADE.
+3. Если selected_ev > MIN_TRADE_EV → ставка BASE_STAKE.
+4. Если отдельно включён Crowd+Binance override и выполнены его условия → ставка override.
+5. Иначе → NO_TRADE.
 ```
 
-Для новой сделки в `features_json` сохраняются:
+По умолчанию Crowd+Binance override выключен.
+
+## Новые диагностические поля
+
+В `features_json` и `/signal` сохраняются:
 
 ```text
-selected_expected_coeff
+negative_fallback_enabled
+negative_fallback_blocked
 normal_ev_pass
-consensus_override_eligible
-crowd_binance_override
+selection_reason
 trade_rule
-consensus_override_enabled
-consensus_override_min_coeff
-consensus_override_stake_usd
+no_trade_reason
 ```
 
-Значения `trade_rule`:
+Пример заблокированного сигнала:
 
-```text
-NORMAL_EV_FILTER
-CROWD_BINANCE_OVERRIDE
-NO_TRADE
+```json
+{
+  "selection_reason": "NEGATIVE_EV_PROBABILITY_FALLBACK",
+  "normal_ev_pass": true,
+  "negative_fallback_enabled": false,
+  "negative_fallback_blocked": true,
+  "trade_executed": false,
+  "stake": 0.0,
+  "no_trade_reason": "NEGATIVE_FALLBACK_DISABLED",
+  "trade_rule": "NO_TRADE"
+}
 ```
 
-Новые решения маркируются:
-
-```text
-strategy_version=1.3.2
-```
+Новые решения маркируются `strategy_version=1.3.3`.
 
 ## API
 
@@ -78,36 +88,20 @@ strategy_version=1.3.2
 /strategy/performance
 ```
 
-`/signal` дополнительно показывает причину выбора и применение нового правила:
-
-```json
-{
-  "selection_reason": "WEAK_EV_CROWD_BINANCE_FALLBACK",
-  "crowd_binance_consensus": "DOWN",
-  "selected_expected_coeff": 1.63,
-  "normal_ev_pass": false,
-  "consensus_override_eligible": true,
-  "crowd_binance_override": true,
-  "trade_rule": "CROWD_BINANCE_OVERRIDE",
-  "trade_executed": true,
-  "stake": 10.0
-}
-```
-
 ## История и база
 
-PostgreSQL удалять или пересоздавать не нужно. Новых колонок не требуется: диагностические поля сохраняются внутри существующего `features_json`. Старая история остаётся на месте и отделяется по `strategy_version`.
+PostgreSQL удалять или пересоздавать не нужно. Новых колонок нет: новые поля сохраняются в существующем `features_json`. Старая история полностью сохраняется.
 
 ## Обновление GitHub и Railway
 
 1. Распакуйте ZIP.
-2. Полностью замените файлы текущего GitHub-репозитория содержимым папки.
+2. Полностью замените файлы текущего GitHub-репозитория содержимым папки `FUSION_EV-1.3.3`.
 3. PostgreSQL в Railway не удаляйте.
-4. В Railway замените или проверьте Variables по `RAILWAY_VARIABLES.txt`.
+4. Сверьте Variables с `RAILWAY_VARIABLES.txt`.
 5. Оставьте одну replica.
 6. Выполните Redeploy.
-7. Проверьте `/health`: версия должна быть `1.3.2`.
-8. В окне T−40 проверьте `/signal` и поля `trade_rule`, `selected_expected_coeff`, `crowd_binance_override`.
+7. Проверьте `/health`: версия `1.3.3`, `negative_fallback_enabled=false`, `consensus_override_enabled=false`.
+8. В следующем `NEGATIVE_EV_PROBABILITY_FALLBACK` проверьте `/signal`: `negative_fallback_blocked=true` и `trade_executed=false`.
 
 ## Режим
 

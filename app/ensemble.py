@@ -571,12 +571,21 @@ def select_side_and_stake(
     trades = int(state.get("trades_count", 0) or 0)
     bank = float(state.get("bank", settings.start_bank) or settings.start_bank)
 
+    negative_fallback_blocked = (
+        settings.trade_filter_enabled
+        and selection_reason == "NEGATIVE_EV_PROBABILITY_FALLBACK"
+        and not settings.negative_fallback_enabled
+    )
+
     trade_executed = True
     no_trade_reason: Optional[str] = None
     if settings.trade_filter_enabled:
         if settings.require_payout_bucket_ready and not selected_payout_ready:
             trade_executed = False
             no_trade_reason = "PAYOUT_BUCKET_NOT_READY"
+        elif negative_fallback_blocked:
+            trade_executed = False
+            no_trade_reason = "NEGATIVE_FALLBACK_DISABLED"
         elif not normal_ev_pass and not consensus_override_eligible:
             trade_executed = False
             no_trade_reason = "EV_NOT_ABOVE_MINIMUM"
@@ -590,13 +599,13 @@ def select_side_and_stake(
 
     if consensus_override_applied:
         stake = settings.consensus_override_stake_usd
-        quality = "V1_3_2_FIXED_STAKE_CROWD_BINANCE_OVERRIDE"
+        quality = "V1_3_3_FIXED_STAKE_CROWD_BINANCE_OVERRIDE"
     else:
         stake = settings.base_stake if trade_executed else 0.0
         quality = (
-            "V1_3_2_FIXED_STAKE"
+            "V1_3_3_FIXED_STAKE"
             if trade_executed
-            else f"V1_3_2_NO_TRADE_{no_trade_reason}"
+            else f"V1_3_3_NO_TRADE_{no_trade_reason}"
         )
 
     medium_ready = (
@@ -627,7 +636,7 @@ def select_side_and_stake(
         and not settings.variable_stake_enabled
         and not consensus_override_applied
     ):
-        quality = "V1_3_2_FIXED_STAKE"
+        quality = "V1_3_3_FIXED_STAKE"
     elif (
         trade_executed
         and trades < settings.min_trades_medium_stake
@@ -667,6 +676,8 @@ def select_side_and_stake(
         "crowd_binance_consensus": consensus_signal,
         "selected_expected_coeff": selected_expected_coeff,
         "normal_ev_pass": normal_ev_pass,
+        "negative_fallback_enabled": settings.negative_fallback_enabled,
+        "negative_fallback_blocked": negative_fallback_blocked,
         "consensus_override_eligible": consensus_override_eligible,
         "crowd_binance_override": consensus_override_applied,
         "trade_rule": (
@@ -771,6 +782,8 @@ def build_decision(
             "crowd_binance_consensus": choice["crowd_binance_consensus"],
             "selected_expected_coeff": choice["selected_expected_coeff"],
             "normal_ev_pass": choice["normal_ev_pass"],
+            "negative_fallback_enabled": choice["negative_fallback_enabled"],
+            "negative_fallback_blocked": choice["negative_fallback_blocked"],
             "consensus_override_eligible": choice["consensus_override_eligible"],
             "crowd_binance_override": choice["crowd_binance_override"],
             "trade_rule": choice["trade_rule"],

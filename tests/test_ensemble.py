@@ -6,7 +6,14 @@ from app.ensemble import (
     payout_calibration,
     select_side_and_stake,
 )
+from app.config import settings
 from app.models import ComponentSignal
+
+
+def _set_setting(name: str, value):
+    old = getattr(settings, name)
+    object.__setattr__(settings, name, value)
+    return old
 
 
 def _round(epoch: int, winner: str, coeff: float = 2.0):
@@ -91,20 +98,24 @@ def test_strong_ev_reversal_with_low_agreement_is_blocked():
     assert result["selection_reason"] == "EV_REVERSAL_BLOCKED_PROBABILITY_FALLBACK"
 
 
-def test_weak_ev_uses_crowd_binance_consensus():
-    result = select_side_and_stake(
-        probability_up=0.54,
-        coeff_up=1.50,
-        coeff_down=1.80,  # selected DOWN EV is below MIN_TRADE_EV=-0.10
-        agreement_up=0.60,
-        state={"trades_count": 50, "bank": 500},
-        payout_ready_up=True,
-        payout_ready_down=True,
-        crowd_probability_up=0.47,
-        crowd_available=True,
-        binance_probability_up=0.48,
-        binance_available=True,
-    )
+def test_weak_ev_uses_crowd_binance_consensus_when_override_enabled():
+    old = _set_setting("consensus_override_enabled", True)
+    try:
+        result = select_side_and_stake(
+            probability_up=0.54,
+            coeff_up=1.50,
+            coeff_down=1.80,  # selected DOWN EV is below MIN_TRADE_EV=-0.10
+            agreement_up=0.60,
+            state={"trades_count": 50, "bank": 500},
+            payout_ready_up=True,
+            payout_ready_down=True,
+            crowd_probability_up=0.47,
+            crowd_available=True,
+            binance_probability_up=0.48,
+            binance_available=True,
+        )
+    finally:
+        object.__setattr__(settings, "consensus_override_enabled", old)
     assert result["signal"] == "DOWN"
     assert result["crowd_binance_consensus"] == "DOWN"
     assert result["selection_reason"] == "WEAK_EV_CROWD_BINANCE_FALLBACK"
@@ -116,19 +127,23 @@ def test_weak_ev_uses_crowd_binance_consensus():
 
 
 def test_consensus_override_does_not_bypass_minimum_coefficient():
-    result = select_side_and_stake(
-        probability_up=0.54,
-        coeff_up=1.50,
-        coeff_down=1.39,
-        agreement_up=0.60,
-        state={"trades_count": 50, "bank": 500},
-        payout_ready_up=True,
-        payout_ready_down=True,
-        crowd_probability_up=0.47,
-        crowd_available=True,
-        binance_probability_up=0.48,
-        binance_available=True,
-    )
+    old = _set_setting("consensus_override_enabled", True)
+    try:
+        result = select_side_and_stake(
+            probability_up=0.54,
+            coeff_up=1.50,
+            coeff_down=1.39,
+            agreement_up=0.60,
+            state={"trades_count": 50, "bank": 500},
+            payout_ready_up=True,
+            payout_ready_down=True,
+            crowd_probability_up=0.47,
+            crowd_available=True,
+            binance_probability_up=0.48,
+            binance_available=True,
+        )
+    finally:
+        object.__setattr__(settings, "consensus_override_enabled", old)
     assert result["selection_reason"] == "WEAK_EV_CROWD_BINANCE_FALLBACK"
     assert result["selected_expected_coeff"] == 1.39
     assert result["crowd_binance_override"] is False
@@ -137,19 +152,23 @@ def test_consensus_override_does_not_bypass_minimum_coefficient():
 
 
 def test_consensus_override_does_not_bypass_payout_readiness():
-    result = select_side_and_stake(
-        probability_up=0.54,
-        coeff_up=1.50,
-        coeff_down=1.80,
-        agreement_up=0.60,
-        state={"trades_count": 50, "bank": 500},
-        payout_ready_up=True,
-        payout_ready_down=False,
-        crowd_probability_up=0.47,
-        crowd_available=True,
-        binance_probability_up=0.48,
-        binance_available=True,
-    )
+    old = _set_setting("consensus_override_enabled", True)
+    try:
+        result = select_side_and_stake(
+            probability_up=0.54,
+            coeff_up=1.50,
+            coeff_down=1.80,
+            agreement_up=0.60,
+            state={"trades_count": 50, "bank": 500},
+            payout_ready_up=True,
+            payout_ready_down=False,
+            crowd_probability_up=0.47,
+            crowd_available=True,
+            binance_probability_up=0.48,
+            binance_available=True,
+        )
+    finally:
+        object.__setattr__(settings, "consensus_override_enabled", old)
     assert result["consensus_override_eligible"] is True
     assert result["crowd_binance_override"] is False
     assert result["trade_executed"] is False
@@ -173,8 +192,58 @@ def test_probability_fallback_never_uses_consensus_override():
     assert result["selection_reason"] == "NEGATIVE_EV_PROBABILITY_FALLBACK"
     assert result["consensus_override_eligible"] is False
     assert result["crowd_binance_override"] is False
+    assert result["negative_fallback_blocked"] is True
     assert result["trade_executed"] is False
-    assert result["no_trade_reason"] == "EV_NOT_ABOVE_MINIMUM"
+    assert result["no_trade_reason"] == "NEGATIVE_FALLBACK_DISABLED"
+
+
+def test_negative_fallback_is_blocked_even_when_general_ev_filter_passes():
+    result = select_side_and_stake(
+        probability_up=0.54,
+        coeff_up=1.70,  # UP selected EV = -0.082, above MIN_TRADE_EV=-0.10
+        coeff_down=1.70,
+        agreement_up=0.60,
+        state={"trades_count": 50, "bank": 500},
+        payout_ready_up=True,
+        payout_ready_down=True,
+        crowd_probability_up=0.47,
+        crowd_available=True,
+        binance_probability_up=0.53,
+        binance_available=True,
+    )
+    assert result["selection_reason"] == "NEGATIVE_EV_PROBABILITY_FALLBACK"
+    assert result["normal_ev_pass"] is True
+    assert result["negative_fallback_enabled"] is False
+    assert result["negative_fallback_blocked"] is True
+    assert result["trade_executed"] is False
+    assert result["stake"] == 0.0
+    assert result["no_trade_reason"] == "NEGATIVE_FALLBACK_DISABLED"
+    assert result["trade_rule"] == "NO_TRADE"
+
+
+def test_negative_fallback_can_be_reenabled_by_variable():
+    old = _set_setting("negative_fallback_enabled", True)
+    try:
+        result = select_side_and_stake(
+            probability_up=0.54,
+            coeff_up=1.70,
+            coeff_down=1.70,
+            agreement_up=0.60,
+            state={"trades_count": 50, "bank": 500},
+            payout_ready_up=True,
+            payout_ready_down=True,
+            crowd_probability_up=0.47,
+            crowd_available=True,
+            binance_probability_up=0.53,
+            binance_available=True,
+        )
+    finally:
+        object.__setattr__(settings, "negative_fallback_enabled", old)
+    assert result["selection_reason"] == "NEGATIVE_EV_PROBABILITY_FALLBACK"
+    assert result["normal_ev_pass"] is True
+    assert result["negative_fallback_blocked"] is False
+    assert result["trade_executed"] is True
+    assert result["no_trade_reason"] is None
 
 
 def test_weak_ev_without_consensus_uses_probability():

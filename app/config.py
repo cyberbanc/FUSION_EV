@@ -93,11 +93,10 @@ class Settings:
     )
     fallback_component_margin: float = _float("FALLBACK_COMPONENT_MARGIN", 0.005)
 
-    # v1.3.2: Crowd+Binance consensus may bypass only the EV threshold when
-    # the selected corrected coefficient is high enough. Payout-bucket
-    # readiness remains mandatory when REQUIRE_PAYOUT_BUCKET_READY=true.
+    # Crowd+Binance consensus override is retained for controlled tests, but
+    # remains disabled by default in v1.3.3.
     consensus_override_enabled: bool = _bool(
-        "CONSENSUS_OVERRIDE_ENABLED", True
+        "CONSENSUS_OVERRIDE_ENABLED", False
     )
     consensus_override_min_coeff: float = _float(
         "CONSENSUS_OVERRIDE_MIN_COEFF", 1.40
@@ -107,10 +106,13 @@ class Settings:
     )
 
     # A decision is recorded every round for diagnostics and payout learning.
-    # The normal path trades only above MIN_TRADE_EV; v1.3.2 may additionally
-    # use the narrowly scoped Crowd+Binance consensus override.
+    # v1.3.3 blocks NEGATIVE_EV_PROBABILITY_FALLBACK as a separate category,
+    # even when its selected EV is above the general MIN_TRADE_EV threshold.
     trade_filter_enabled: bool = _bool("TRADE_FILTER_ENABLED", True)
     min_trade_ev: float = _float("MIN_TRADE_EV", -0.10)
+    negative_fallback_enabled: bool = _bool(
+        "NEGATIVE_FALLBACK_ENABLED", False
+    )
     require_payout_bucket_ready: bool = _bool(
         "REQUIRE_PAYOUT_BUCKET_READY", True
     )

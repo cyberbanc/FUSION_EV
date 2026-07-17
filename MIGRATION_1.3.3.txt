@@ -1,0 +1,15 @@
+M9 FUSION EV — migration 1.3.2 -> 1.3.3
+
+1. Полностью замените код репозитория содержимым этого пакета.
+2. PostgreSQL НЕ удаляйте и НЕ пересоздавайте.
+3. Добавьте/проверьте Railway variable:
+   NEGATIVE_FALLBACK_ENABLED=false
+4. Оставьте:
+   CONSENSUS_OVERRIDE_ENABLED=false
+   TRADE_FILTER_ENABLED=true
+   MIN_TRADE_EV=-0.10
+   REQUIRE_PAYOUT_BUCKET_READY=true
+5. Redeploy.
+6. /health должен показать version=1.3.3 и negative_fallback_enabled=false.
+
+Изменение базы данных не требуется.
