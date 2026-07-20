@@ -1,0 +1,26 @@
+M9 FUSION EV 1.3.6.2 — SIGNAL CACHE HOTFIX
+
+ПРОБЛЕМА
+
+В версии 1.3.6.1 endpoint /signal вызывал tick(). Tilda обращалась к /signal каждые 2 секунды, одновременно с background worker. Запрос ожидал RPC и блокировку _TICK_LOCK, превышал браузерный timeout и показывал Failed to fetch.
+
+ИСПРАВЛЕНИЕ
+
+- Только background worker выполняет tick().
+- После каждого tick worker сохраняет в памяти:
+  - последний live market snapshot;
+  - полное текущее locked-решение;
+  - краткий статус worker.
+- /signal мгновенно читает этот кэш.
+- При WAIT возвращаются live epoch, betting epoch, seconds_to_lock и текущий snapshot.
+- При LOCKED возвращаются решение, текущий live snapshot и locked snapshot_json.
+- При временной RPC-ошибке сохраняется последний хороший snapshot, а error публикуется отдельно.
+
+НЕ ИЗМЕНЕНО
+
+- EV-порог -0.06;
+- ставки $5/$10/$15;
+- shadow window 8;
+- quality window 30;
+- cooldown после трёх реальных LOSS;
+- PostgreSQL-схема, банк, PnL и история.

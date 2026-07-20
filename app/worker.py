@@ -14,6 +14,8 @@ from .risk import stake_for_ev
 
 _LAST_TICK: dict[str, Any] = {}
 _LAST_TICK_LOCK = threading.Lock()
+_LAST_SIGNAL_CACHE: dict[str, Any] = {}
+_LAST_SIGNAL_CACHE_LOCK = threading.Lock()
 _TICK_LOCK = threading.Lock()
 _LAST_SYNC_AT = 0.0
 
@@ -320,7 +322,27 @@ def tick() -> dict[str, Any]:
         with _LAST_TICK_LOCK:
             _LAST_TICK.clear()
             _LAST_TICK.update(result)
+        # Cache the complete live snapshot and locked decision for the public
+        # /signal endpoint. Reading this cache is immediate and never starts
+        # another BSC/Chainlink/Pancake RPC cycle.
+        with _LAST_SIGNAL_CACHE_LOCK:
+            _LAST_SIGNAL_CACHE.clear()
+            _LAST_SIGNAL_CACHE.update(
+                {
+                    "ok": True,
+                    "snapshot": snapshot.to_dict(),
+                    "decision": dict(decision) if decision else None,
+                    "worker_tick": dict(result),
+                    "updated_at": int(time.time()),
+                }
+            )
         return result
+
+
+def signal_cache() -> dict[str, Any]:
+    """Return the most recent worker calculation without performing RPC work."""
+    with _LAST_SIGNAL_CACHE_LOCK:
+        return dict(_LAST_SIGNAL_CACHE)
 
 
 def status() -> dict[str, Any]:
@@ -359,16 +381,21 @@ async def loop(stop: asyncio.Event) -> None:
         try:
             await asyncio.to_thread(tick)
         except Exception as exc:
+            error_result = {
+                "ok": False,
+                "message": "tick_error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "updated_at": int(time.time()),
+            }
             with _LAST_TICK_LOCK:
                 _LAST_TICK.clear()
-                _LAST_TICK.update(
-                    {
-                        "ok": False,
-                        "message": "tick_error",
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "updated_at": int(time.time()),
-                    }
-                )
+                _LAST_TICK.update(error_result)
+            with _LAST_SIGNAL_CACHE_LOCK:
+                # Keep the previous good snapshot/decision when available,
+                # but expose the latest worker error to the dashboard.
+                _LAST_SIGNAL_CACHE["worker_tick"] = dict(error_result)
+                _LAST_SIGNAL_CACHE["error"] = error_result["error"]
+                _LAST_SIGNAL_CACHE["updated_at"] = error_result["updated_at"]
         try:
             await asyncio.wait_for(stop.wait(), timeout=SETTINGS.poll_seconds)
         except asyncio.TimeoutError:

@@ -16,7 +16,7 @@ from . import db
 from .config import SETTINGS
 from .pancake_client import from_env
 from .shadow import summarize
-from .worker import bootstrap_rounds, loop, status as worker_status, tick
+from .worker import bootstrap_rounds, loop, signal_cache, status as worker_status
 
 _STOP: Optional[asyncio.Event] = None
 _TASK: Optional[asyncio.Task] = None
@@ -123,27 +123,61 @@ def health():
 
 @app.get("/signal")
 def signal():
-    result = tick()
-    epoch = result.get("betting_epoch")
-    decision = db.get_decision(int(epoch)) if epoch is not None else None
+    # Read-only, instant endpoint for Tilda/dashboard clients. The background
+    # worker is the only process that performs the expensive tick/RPC cycle.
+    cache = signal_cache()
+    worker_tick = cache.get("worker_tick") or {}
+    snapshot = cache.get("snapshot") or {}
+    decision = cache.get("decision")
+
+    # Fallback for the short moment after a process restart when the worker
+    # has a current epoch summary but the full cached decision is not present.
+    epoch = worker_tick.get("betting_epoch") or snapshot.get("betting_epoch")
+    if decision is None and epoch is not None and db.enabled():
+        try:
+            decision = db.get_decision(int(epoch))
+        except Exception:
+            decision = None
+
     if decision:
-        return _json_safe(
-            {
-                "ok": True,
-                "status": "LOCKED",
-                "decision_locked": True,
-                **decision,
-                "worker_tick": result,
-            }
-        )
-    return {
-        "ok": True,
-        "status": "WAIT",
-        "decision_locked": False,
-        "betting_epoch": epoch,
-        "seconds_to_lock": result.get("seconds_to_lock"),
-        "worker_tick": result,
-    }
+        payload = {
+            "ok": True,
+            "status": "LOCKED",
+            "decision_locked": True,
+            **decision,
+            # Current live market for dashboard cards. The locked T-40 snapshot
+            # remains available separately in decision.snapshot_json.
+            "snapshot": snapshot or decision.get("snapshot_json") or {},
+            "betting_epoch": decision.get("betting_epoch", epoch),
+            "live_epoch": worker_tick.get("live_epoch", decision.get("live_epoch")),
+            "seconds_to_lock": worker_tick.get(
+                "seconds_to_lock",
+                (snapshot or decision.get("snapshot_json") or {}).get("seconds_to_lock"),
+            ),
+            "decision_window": worker_tick.get("decision_window"),
+            "worker_tick": worker_tick,
+            "cache_updated_at": cache.get("updated_at"),
+        }
+        return _json_safe(payload)
+
+    return _json_safe(
+        {
+            "ok": bool(cache.get("ok", True)),
+            "status": "WAIT",
+            "decision_locked": False,
+            "signal": None,
+            "trade_executed": None,
+            "stake": 0.0,
+            "betting_epoch": epoch,
+            "live_epoch": worker_tick.get("live_epoch") or snapshot.get("live_epoch"),
+            "seconds_to_lock": worker_tick.get("seconds_to_lock") or snapshot.get("seconds_to_lock"),
+            "decision_window": worker_tick.get("decision_window") or snapshot.get("decision_window"),
+            "snapshot": snapshot,
+            "worker_tick": worker_tick,
+            "error": cache.get("error"),
+            "cache_updated_at": cache.get("updated_at"),
+        }
+    )
 
 
 @app.get("/status")
@@ -212,7 +246,7 @@ def history_export():
     return Response(
         output.getvalue(),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=m9_fusion_ev_history_v1_3_6.csv"},
+        headers={"Content-Disposition": "attachment; filename=m9_fusion_ev_history_v1_3_6_2.csv"},
     )
 
 
