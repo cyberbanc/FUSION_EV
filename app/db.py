@@ -1,679 +1,815 @@
 from __future__ import annotations
 
-import csv
-import io
-import json
-from typing import Any, Iterable, Optional
+import math
+import threading
+from contextlib import contextmanager
+from typing import Any, Iterable
 
-import psycopg
-from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
+import psycopg2
+from psycopg2.extras import Json, RealDictCursor
+from psycopg2 import sql
 
-from .config import settings
-from .models import FusionSnapshot, RoundData
+from .config import SETTINGS
+from .risk import should_arm_cooldown
+
+_LOCK = threading.RLock()
+_DECISIONS_TABLE = "paper_decisions"
+_STATE_TABLE = "paper_state"
+_ROUNDS_TABLE = "round_history"
+_SNAPSHOTS_TABLE = "fusion_snapshots_v136"
 
 
 def enabled() -> bool:
-    return bool(settings.database_url)
+    return bool(SETTINGS.database_url)
 
 
-def connect():
+@contextmanager
+def conn():
     if not enabled():
-        raise RuntimeError("DATABASE_URL is missing. Add PostgreSQL in Railway.")
-    return psycopg.connect(settings.database_url, row_factory=dict_row)
+        raise RuntimeError("DATABASE_URL is required")
+    c = psycopg2.connect(SETTINGS.database_url, connect_timeout=10)
+    try:
+        yield c
+    finally:
+        c.close()
+
+
+def _existing_tables(cur) -> set[str]:
+    cur.execute(
+        """
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema='public'
+        """
+    )
+    return {r[0] for r in cur.fetchall()}
+
+
+def _table_columns(cur) -> dict[str, set[str]]:
+    cur.execute(
+        """
+        SELECT table_name,column_name FROM information_schema.columns
+        WHERE table_schema='public'
+        """
+    )
+    result: dict[str, set[str]] = {}
+    for table, column in cur.fetchall():
+        result.setdefault(table, set()).add(column)
+    return result
+
+
+def _choose(
+    existing: set[str],
+    candidates: Iterable[str],
+    default: str,
+    *,
+    columns: dict[str, set[str]] | None = None,
+    signature: set[str] | None = None,
+) -> str:
+    for name in candidates:
+        if name in existing:
+            return name
+    if columns and signature:
+        scored = []
+        for table, table_columns in columns.items():
+            score = len(signature & table_columns)
+            if score:
+                scored.append((score, len(table_columns), table))
+        if scored:
+            scored.sort(reverse=True)
+            best_score, _, best_table = scored[0]
+            if best_score >= max(2, len(signature) // 2):
+                return best_table
+    return default
+
+
+def _ident(name: str):
+    return sql.Identifier(name)
+
+
+def _add_columns(cur, table: str, specs: dict[str, str]) -> None:
+    for name, ddl in specs.items():
+        cur.execute(
+            sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}").format(
+                _ident(table), _ident(name), sql.SQL(ddl)
+            )
+        )
 
 
 def init_db() -> None:
-    if not enabled():
-        return
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS fusion_rounds (
-                epoch BIGINT PRIMARY KEY,
-                start_timestamp BIGINT,
-                lock_timestamp BIGINT,
-                close_timestamp BIGINT,
-                lock_price DOUBLE PRECISION,
-                close_price DOUBLE PRECISION,
-                total_amount_bnb DOUBLE PRECISION,
-                bull_amount_bnb DOUBLE PRECISION,
-                bear_amount_bnb DOUBLE PRECISION,
-                reward_base_bnb DOUBLE PRECISION,
-                reward_amount_bnb DOUBLE PRECISION,
-                oracle_called BOOLEAN NOT NULL DEFAULT FALSE,
-                actual_winner TEXT,
-                winner_coeff_gross DOUBLE PRECISION,
-                winner_coeff_net DOUBLE PRECISION,
-                move_points DOUBLE PRECISION,
-                source TEXT NOT NULL DEFAULT 'pancake_final',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            """
+    global _DECISIONS_TABLE, _STATE_TABLE, _ROUNDS_TABLE, _SNAPSHOTS_TABLE
+    with _LOCK, conn() as c, c.cursor() as cur:
+        existing = _existing_tables(cur)
+        columns = _table_columns(cur)
+        _DECISIONS_TABLE = _choose(
+            existing,
+            ("paper_decisions", "decisions", "fusion_decisions", "paper_history", "fusion_history"),
+            "paper_decisions",
+            columns=columns,
+            signature={"betting_epoch", "signal", "stake", "strategy_version", "bank_after"},
         )
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS fusion_snapshots (
-                id BIGSERIAL PRIMARY KEY,
-                betting_epoch BIGINT NOT NULL,
-                live_epoch BIGINT NOT NULL,
-                bucket_seconds INTEGER NOT NULL,
-                chain_timestamp BIGINT NOT NULL,
-                seconds_to_lock INTEGER NOT NULL,
-                chainlink_price DOUBLE PRECISION NOT NULL,
-                oracle_updated_at BIGINT,
-                oracle_age_seconds INTEGER,
-                live_lock_price DOUBLE PRECISION,
-                live_move_signed DOUBLE PRECISION,
-                live_move_points DOUBLE PRECISION,
-                provisional_winner TEXT,
-                betting_total_bnb DOUBLE PRECISION,
-                betting_bull_bnb DOUBLE PRECISION,
-                betting_bear_bnb DOUBLE PRECISION,
-                betting_bull_share_pct DOUBLE PRECISION,
-                betting_bear_share_pct DOUBLE PRECISION,
-                current_net_coeff_up DOUBLE PRECISION,
-                current_net_coeff_down DOUBLE PRECISION,
-                binance_json JSONB,
-                snapshot_json JSONB NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE (betting_epoch, bucket_seconds)
-            )
-            """
+        _STATE_TABLE = _choose(
+            existing,
+            ("paper_state", "fusion_state", "state"),
+            "paper_state",
+            columns=columns,
+            signature={"bank", "wins", "losses", "trades_count", "peak_bank"},
         )
-        cur.execute(
-            """
-            CREATE INDEX IF NOT EXISTS fusion_snapshots_epoch_idx
-            ON fusion_snapshots (betting_epoch, seconds_to_lock DESC)
-            """
+        _ROUNDS_TABLE = _choose(
+            existing,
+            ("round_history", "rounds_history", "fusion_rounds"),
+            "round_history",
+            columns=columns,
+            signature={"epoch", "lock_price", "close_price", "oracle_called"},
         )
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS fusion_decisions (
-                betting_epoch BIGINT PRIMARY KEY,
-                live_epoch BIGINT NOT NULL,
-                strategy_version TEXT NOT NULL DEFAULT 'legacy',
-                locked_at_chain_timestamp BIGINT NOT NULL,
-                locked_at_seconds_to_lock INTEGER NOT NULL,
-                signal TEXT NOT NULL CHECK (signal IN ('UP','DOWN')),
-                trade_executed BOOLEAN NOT NULL DEFAULT TRUE,
-                no_trade_reason TEXT,
-                probability_up DOUBLE PRECISION NOT NULL,
-                probability_down DOUBLE PRECISION NOT NULL,
-                raw_expected_coeff_up DOUBLE PRECISION,
-                raw_expected_coeff_down DOUBLE PRECISION,
-                payout_correction_up DOUBLE PRECISION,
-                payout_correction_down DOUBLE PRECISION,
-                payout_bucket_up TEXT,
-                payout_bucket_down TEXT,
-                expected_coeff_up DOUBLE PRECISION NOT NULL,
-                expected_coeff_down DOUBLE PRECISION NOT NULL,
-                ev_up DOUBLE PRECISION NOT NULL,
-                ev_down DOUBLE PRECISION NOT NULL,
-                selected_ev DOUBLE PRECISION NOT NULL,
-                agreement DOUBLE PRECISION NOT NULL,
-                decision_quality TEXT NOT NULL,
-                stake DOUBLE PRECISION NOT NULL,
-                bank_before DOUBLE PRECISION NOT NULL,
-                components_json JSONB NOT NULL,
-                weights_json JSONB NOT NULL,
-                features_json JSONB NOT NULL,
-                snapshot_json JSONB NOT NULL,
-                settled BOOLEAN NOT NULL DEFAULT FALSE,
-                final_winner TEXT,
-                final_coeff_gross DOUBLE PRECISION,
-                final_coeff_net DOUBLE PRECISION,
-                final_move_points DOUBLE PRECISION,
-                outcome TEXT,
-                pnl DOUBLE PRECISION,
-                bank_before_settlement DOUBLE PRECISION,
-                bank_after DOUBLE PRECISION,
-                final_coeff_up DOUBLE PRECISION,
-                final_coeff_down DOUBLE PRECISION,
-                actual_ev_signal DOUBLE PRECISION,
-                payout_ratio_signal DOUBLE PRECISION,
-                settled_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            """
-        )
-        # Safe in-place migration from v1.0.x. Existing history is preserved.
-        for statement in (
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS strategy_version TEXT NOT NULL DEFAULT 'legacy'",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS raw_expected_coeff_up DOUBLE PRECISION",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS raw_expected_coeff_down DOUBLE PRECISION",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_correction_up DOUBLE PRECISION",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_correction_down DOUBLE PRECISION",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_bucket_up TEXT",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_bucket_down TEXT",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS bank_before_settlement DOUBLE PRECISION",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS final_coeff_up DOUBLE PRECISION",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS final_coeff_down DOUBLE PRECISION",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS actual_ev_signal DOUBLE PRECISION",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS payout_ratio_signal DOUBLE PRECISION",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS trade_executed BOOLEAN NOT NULL DEFAULT TRUE",
-            "ALTER TABLE fusion_decisions ADD COLUMN IF NOT EXISTS no_trade_reason TEXT",
-        ):
-            cur.execute(statement)
-
-        # Backfill final hypothetical UP/DOWN payouts for already-settled v1.0.x
-        # decisions. This immediately lets v1.1 learn from the retained history.
-        cur.execute(
-            """
-            UPDATE fusion_decisions d SET
-                final_coeff_up = CASE
-                    WHEN r.bull_amount_bnb > 0
-                    THEN (r.total_amount_bnb * (1.0 - %s)) / r.bull_amount_bnb
-                    ELSE NULL END,
-                final_coeff_down = CASE
-                    WHEN r.bear_amount_bnb > 0
-                    THEN (r.total_amount_bnb * (1.0 - %s)) / r.bear_amount_bnb
-                    ELSE NULL END
-            FROM fusion_rounds r
-            WHERE d.betting_epoch = r.epoch
-              AND d.settled = TRUE
-              AND (d.final_coeff_up IS NULL OR d.final_coeff_down IS NULL)
-            """,
-            (settings.treasury_fee, settings.treasury_fee),
-        )
-        cur.execute(
-            """
-            UPDATE fusion_decisions SET
-                actual_ev_signal = CASE
-                    WHEN signal='UP' AND final_coeff_up IS NOT NULL
-                        THEN probability_up * final_coeff_up - 1.0
-                    WHEN signal='DOWN' AND final_coeff_down IS NOT NULL
-                        THEN probability_down * final_coeff_down - 1.0
-                    ELSE actual_ev_signal END,
-                payout_ratio_signal = CASE
-                    WHEN signal='UP' AND final_coeff_up IS NOT NULL
-                         AND COALESCE(raw_expected_coeff_up, expected_coeff_up) > 1.0
-                        THEN final_coeff_up / COALESCE(raw_expected_coeff_up, expected_coeff_up)
-                    WHEN signal='DOWN' AND final_coeff_down IS NOT NULL
-                         AND COALESCE(raw_expected_coeff_down, expected_coeff_down) > 1.0
-                        THEN final_coeff_down / COALESCE(raw_expected_coeff_down, expected_coeff_down)
-                    ELSE payout_ratio_signal END
-            WHERE settled=TRUE
-            """
-        )
+        # Snapshots are disposable model inputs, so v1.3.6 uses its own
+        # table instead of risking a conflict with an older snapshot schema.
+        _SNAPSHOTS_TABLE = "fusion_snapshots_v136"
 
         cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS fusion_state (
-                id INTEGER PRIMARY KEY CHECK (id=1),
-                start_bank DOUBLE PRECISION NOT NULL,
-                bank DOUBLE PRECISION NOT NULL,
-                wins INTEGER NOT NULL DEFAULT 0,
-                losses INTEGER NOT NULL DEFAULT 0,
-                draws INTEGER NOT NULL DEFAULT 0,
-                trades_count INTEGER NOT NULL DEFAULT 0,
-                current_loss_streak INTEGER NOT NULL DEFAULT 0,
-                max_loss_streak INTEGER NOT NULL DEFAULT 0,
-                peak_bank DOUBLE PRECISION NOT NULL,
-                max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0,
-                last_settled_epoch BIGINT,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            """
-        )
-        cur.execute(
-            """
-            INSERT INTO fusion_state(id,start_bank,bank,peak_bank)
-            VALUES(1,%s,%s,%s)
-            ON CONFLICT(id) DO NOTHING
-            """,
-            (settings.start_bank, settings.start_bank, settings.start_bank),
-        )
-        conn.commit()
-
-
-def upsert_rounds(rows: Iterable[RoundData], source: str = "pancake_final") -> int:
-    count = 0
-    with connect() as conn, conn.cursor() as cur:
-        for row in rows:
-            cur.execute(
+            sql.SQL(
                 """
-                INSERT INTO fusion_rounds(
-                    epoch,start_timestamp,lock_timestamp,close_timestamp,
-                    lock_price,close_price,total_amount_bnb,bull_amount_bnb,bear_amount_bnb,
-                    reward_base_bnb,reward_amount_bnb,oracle_called,actual_winner,
-                    winner_coeff_gross,winner_coeff_net,move_points,source
-                ) VALUES(
-                    %(epoch)s,%(start_timestamp)s,%(lock_timestamp)s,%(close_timestamp)s,
-                    %(lock_price)s,%(close_price)s,%(total_amount_bnb)s,%(bull_amount_bnb)s,%(bear_amount_bnb)s,
-                    %(reward_base_bnb)s,%(reward_amount_bnb)s,%(oracle_called)s,%(actual_winner)s,
-                    %(winner_coeff_gross)s,%(winner_coeff_net)s,%(move_points)s,%(source)s
+                CREATE TABLE IF NOT EXISTS {} (
+                    id INTEGER PRIMARY KEY,
+                    start_bank DOUBLE PRECISION NOT NULL,
+                    bank DOUBLE PRECISION NOT NULL,
+                    wins INTEGER NOT NULL DEFAULT 0,
+                    losses INTEGER NOT NULL DEFAULT 0,
+                    draws INTEGER NOT NULL DEFAULT 0,
+                    trades_count INTEGER NOT NULL DEFAULT 0,
+                    current_loss_streak INTEGER NOT NULL DEFAULT 0,
+                    max_loss_streak INTEGER NOT NULL DEFAULT 0,
+                    peak_bank DOUBLE PRECISION NOT NULL,
+                    max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    last_settled_epoch BIGINT,
+                    fib_index_even INTEGER NOT NULL DEFAULT 0,
+                    fib_index_odd INTEGER NOT NULL DEFAULT 0,
+                    cooldown_rounds_remaining INTEGER NOT NULL DEFAULT 0,
+                    cooldown_trigger_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-                ON CONFLICT(epoch) DO UPDATE SET
-                    start_timestamp=EXCLUDED.start_timestamp,
-                    lock_timestamp=EXCLUDED.lock_timestamp,
-                    close_timestamp=EXCLUDED.close_timestamp,
-                    lock_price=EXCLUDED.lock_price,
-                    close_price=EXCLUDED.close_price,
-                    total_amount_bnb=EXCLUDED.total_amount_bnb,
-                    bull_amount_bnb=EXCLUDED.bull_amount_bnb,
-                    bear_amount_bnb=EXCLUDED.bear_amount_bnb,
-                    reward_base_bnb=EXCLUDED.reward_base_bnb,
-                    reward_amount_bnb=EXCLUDED.reward_amount_bnb,
-                    oracle_called=EXCLUDED.oracle_called,
-                    actual_winner=EXCLUDED.actual_winner,
-                    winner_coeff_gross=EXCLUDED.winner_coeff_gross,
-                    winner_coeff_net=EXCLUDED.winner_coeff_net,
-                    move_points=EXCLUDED.move_points,
-                    source=EXCLUDED.source,
-                    updated_at=NOW()
-                """,
-                {**row.to_dict(), "source": source},
-            )
-            count += 1
-        conn.commit()
-    return count
-
-
-def load_rounds(limit: int = 1200) -> list[dict[str, Any]]:
-    safe = max(1, min(int(limit), 10000))
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT * FROM (
-                SELECT * FROM fusion_rounds
-                WHERE actual_winner IN ('UP','DOWN')
-                ORDER BY epoch DESC LIMIT %s
-            ) q ORDER BY epoch ASC
-            """,
-            (safe,),
+                """
+            ).format(_ident(_STATE_TABLE))
         )
-        return [dict(row) for row in cur.fetchall()]
-
-
-def recent_rounds(limit: int = 30) -> list[dict[str, Any]]:
-    safe = max(1, min(int(limit), settings.history_api_max_limit))
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM fusion_rounds ORDER BY epoch DESC LIMIT %s", (safe,))
-        return [dict(row) for row in cur.fetchall()]
-
-
-def save_snapshot(snapshot: FusionSnapshot, binance: Optional[dict[str, Any]] = None) -> bool:
-    bucket_size = max(1, settings.snapshot_bucket_seconds)
-    bucket = int(round(snapshot.seconds_to_lock / bucket_size) * bucket_size)
-    data = snapshot.to_dict()
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO fusion_snapshots(
-                betting_epoch,live_epoch,bucket_seconds,chain_timestamp,seconds_to_lock,
-                chainlink_price,oracle_updated_at,oracle_age_seconds,live_lock_price,
-                live_move_signed,live_move_points,provisional_winner,betting_total_bnb,
-                betting_bull_bnb,betting_bear_bnb,betting_bull_share_pct,
-                betting_bear_share_pct,current_net_coeff_up,current_net_coeff_down,
-                binance_json,snapshot_json
-            ) VALUES(
-                %(betting_epoch)s,%(live_epoch)s,%(bucket)s,%(chain_timestamp)s,%(seconds_to_lock)s,
-                %(chainlink_price)s,%(oracle_updated_at)s,%(oracle_age_seconds)s,%(live_lock_price)s,
-                %(live_move_signed)s,%(live_move_points)s,%(provisional_winner)s,%(betting_total_bnb)s,
-                %(betting_bull_bnb)s,%(betting_bear_bnb)s,%(betting_bull_share_pct)s,
-                %(betting_bear_share_pct)s,%(current_net_coeff_up)s,%(current_net_coeff_down)s,
-                %(binance_json)s,%(snapshot_json)s
-            ) ON CONFLICT(betting_epoch,bucket_seconds) DO UPDATE SET
-                chain_timestamp=EXCLUDED.chain_timestamp,
-                seconds_to_lock=EXCLUDED.seconds_to_lock,
-                chainlink_price=EXCLUDED.chainlink_price,
-                oracle_updated_at=EXCLUDED.oracle_updated_at,
-                oracle_age_seconds=EXCLUDED.oracle_age_seconds,
-                live_lock_price=EXCLUDED.live_lock_price,
-                live_move_signed=EXCLUDED.live_move_signed,
-                live_move_points=EXCLUDED.live_move_points,
-                provisional_winner=EXCLUDED.provisional_winner,
-                betting_total_bnb=EXCLUDED.betting_total_bnb,
-                betting_bull_bnb=EXCLUDED.betting_bull_bnb,
-                betting_bear_bnb=EXCLUDED.betting_bear_bnb,
-                betting_bull_share_pct=EXCLUDED.betting_bull_share_pct,
-                betting_bear_share_pct=EXCLUDED.betting_bear_share_pct,
-                current_net_coeff_up=EXCLUDED.current_net_coeff_up,
-                current_net_coeff_down=EXCLUDED.current_net_coeff_down,
-                binance_json=COALESCE(EXCLUDED.binance_json,fusion_snapshots.binance_json),
-                snapshot_json=EXCLUDED.snapshot_json
-            """,
+        _add_columns(
+            cur,
+            _STATE_TABLE,
             {
-                **data,
-                "bucket": bucket,
-                "binance_json": Jsonb(binance) if binance is not None else None,
-                "snapshot_json": Jsonb(data),
+                "start_bank": "DOUBLE PRECISION NOT NULL DEFAULT 500",
+                "bank": "DOUBLE PRECISION NOT NULL DEFAULT 500",
+                "wins": "INTEGER NOT NULL DEFAULT 0",
+                "losses": "INTEGER NOT NULL DEFAULT 0",
+                "draws": "INTEGER NOT NULL DEFAULT 0",
+                "trades_count": "INTEGER NOT NULL DEFAULT 0",
+                "current_loss_streak": "INTEGER NOT NULL DEFAULT 0",
+                "max_loss_streak": "INTEGER NOT NULL DEFAULT 0",
+                "peak_bank": "DOUBLE PRECISION NOT NULL DEFAULT 500",
+                "max_drawdown": "DOUBLE PRECISION NOT NULL DEFAULT 0",
+                "last_settled_epoch": "BIGINT",
+                "fib_index_even": "INTEGER NOT NULL DEFAULT 0",
+                "fib_index_odd": "INTEGER NOT NULL DEFAULT 0",
+                "cooldown_rounds_remaining": "INTEGER NOT NULL DEFAULT 0",
+                "cooldown_trigger_count": "INTEGER NOT NULL DEFAULT 0",
+                "updated_at": "TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+                "created_at": "TIMESTAMPTZ NOT NULL DEFAULT NOW()",
             },
         )
-        conn.commit()
-        return True
-
-
-def load_snapshots(epoch: int) -> list[dict[str, Any]]:
-    with connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT * FROM fusion_snapshots WHERE betting_epoch=%s ORDER BY seconds_to_lock DESC",
-            (int(epoch),),
+            sql.SQL(
+                """
+                INSERT INTO {}(id,start_bank,bank,peak_bank)
+                VALUES(1,%s,%s,%s)
+                ON CONFLICT (id) DO NOTHING
+                """
+            ).format(_ident(_STATE_TABLE)),
+            (SETTINGS.start_bank, SETTINGS.start_bank, SETTINGS.start_bank),
         )
-        return [dict(row) for row in cur.fetchall()]
+
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {} (
+                    betting_epoch BIGINT PRIMARY KEY,
+                    live_epoch BIGINT,
+                    locked_at_chain_timestamp BIGINT,
+                    locked_at_seconds_to_lock INTEGER,
+                    signal TEXT,
+                    probability_up DOUBLE PRECISION,
+                    probability_down DOUBLE PRECISION,
+                    expected_coeff_up DOUBLE PRECISION,
+                    expected_coeff_down DOUBLE PRECISION,
+                    ev_up DOUBLE PRECISION,
+                    ev_down DOUBLE PRECISION,
+                    selected_ev DOUBLE PRECISION,
+                    agreement DOUBLE PRECISION,
+                    decision_quality TEXT,
+                    stake DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    bank_before DOUBLE PRECISION,
+                    components_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    weights_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    features_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    settled BOOLEAN NOT NULL DEFAULT FALSE,
+                    final_winner TEXT,
+                    final_coeff_gross DOUBLE PRECISION,
+                    final_coeff_net DOUBLE PRECISION,
+                    final_move_points DOUBLE PRECISION,
+                    outcome TEXT,
+                    pnl DOUBLE PRECISION,
+                    bank_after DOUBLE PRECISION,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    settled_at TIMESTAMPTZ,
+                    raw_expected_coeff_up DOUBLE PRECISION,
+                    raw_expected_coeff_down DOUBLE PRECISION,
+                    payout_correction_up DOUBLE PRECISION,
+                    payout_correction_down DOUBLE PRECISION,
+                    bank_before_settlement DOUBLE PRECISION,
+                    final_coeff_up DOUBLE PRECISION,
+                    final_coeff_down DOUBLE PRECISION,
+                    actual_ev_signal DOUBLE PRECISION,
+                    payout_ratio_signal DOUBLE PRECISION,
+                    strategy_version TEXT,
+                    payout_bucket_up TEXT,
+                    payout_bucket_down TEXT,
+                    trade_executed BOOLEAN NOT NULL DEFAULT FALSE,
+                    no_trade_reason TEXT,
+                    source_key TEXT,
+                    selection_reason TEXT,
+                    fib_line TEXT,
+                    fib_index INTEGER,
+                    fib_step INTEGER,
+                    shadow_allowed BOOLEAN,
+                    shadow_reason TEXT,
+                    shadow_stats_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    shadow_pnl DOUBLE PRECISION,
+                    stake_mode TEXT,
+                    stake_tier TEXT,
+                    cooldown_applied BOOLEAN NOT NULL DEFAULT FALSE
+                )
+                """
+            ).format(_ident(_DECISIONS_TABLE))
+        )
+        _add_columns(
+            cur,
+            _DECISIONS_TABLE,
+            {
+                "live_epoch": "BIGINT",
+                "locked_at_chain_timestamp": "BIGINT",
+                "locked_at_seconds_to_lock": "INTEGER",
+                "signal": "TEXT",
+                "probability_up": "DOUBLE PRECISION",
+                "probability_down": "DOUBLE PRECISION",
+                "expected_coeff_up": "DOUBLE PRECISION",
+                "expected_coeff_down": "DOUBLE PRECISION",
+                "ev_up": "DOUBLE PRECISION",
+                "ev_down": "DOUBLE PRECISION",
+                "selected_ev": "DOUBLE PRECISION",
+                "agreement": "DOUBLE PRECISION",
+                "decision_quality": "TEXT",
+                "stake": "DOUBLE PRECISION NOT NULL DEFAULT 0",
+                "bank_before": "DOUBLE PRECISION",
+                "components_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
+                "weights_json": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+                "features_json": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+                "snapshot_json": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+                "settled": "BOOLEAN NOT NULL DEFAULT FALSE",
+                "final_winner": "TEXT",
+                "final_coeff_gross": "DOUBLE PRECISION",
+                "final_coeff_net": "DOUBLE PRECISION",
+                "final_move_points": "DOUBLE PRECISION",
+                "outcome": "TEXT",
+                "pnl": "DOUBLE PRECISION",
+                "bank_after": "DOUBLE PRECISION",
+                "created_at": "TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+                "updated_at": "TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+                "settled_at": "TIMESTAMPTZ",
+                "raw_expected_coeff_up": "DOUBLE PRECISION",
+                "raw_expected_coeff_down": "DOUBLE PRECISION",
+                "payout_correction_up": "DOUBLE PRECISION",
+                "payout_correction_down": "DOUBLE PRECISION",
+                "bank_before_settlement": "DOUBLE PRECISION",
+                "final_coeff_up": "DOUBLE PRECISION",
+                "final_coeff_down": "DOUBLE PRECISION",
+                "actual_ev_signal": "DOUBLE PRECISION",
+                "payout_ratio_signal": "DOUBLE PRECISION",
+                "strategy_version": "TEXT",
+                "payout_bucket_up": "TEXT",
+                "payout_bucket_down": "TEXT",
+                "trade_executed": "BOOLEAN NOT NULL DEFAULT FALSE",
+                "no_trade_reason": "TEXT",
+                "source_key": "TEXT",
+                "selection_reason": "TEXT",
+                "fib_line": "TEXT",
+                "fib_index": "INTEGER",
+                "fib_step": "INTEGER",
+                "shadow_allowed": "BOOLEAN",
+                "shadow_reason": "TEXT",
+                "shadow_stats_json": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+                "shadow_pnl": "DOUBLE PRECISION",
+                "stake_mode": "TEXT",
+                "stake_tier": "TEXT",
+                "cooldown_applied": "BOOLEAN NOT NULL DEFAULT FALSE",
+            },
+        )
+        try:
+            cur.execute(
+                sql.SQL("CREATE UNIQUE INDEX IF NOT EXISTS {} ON {} (betting_epoch)").format(
+                    _ident(f"{_DECISIONS_TABLE}_epoch_unique"), _ident(_DECISIONS_TABLE)
+                )
+            )
+        except Exception:
+            c.rollback()
+            raise
+
+        # Reuse the existing 1.3.3 history immediately as shadow training data.
+        cur.execute(
+            sql.SQL(
+                """
+                UPDATE {} SET
+                    source_key=CASE
+                        WHEN decision_quality ILIKE '%CROWD_BINANCE%' THEN 'CROWD_BINANCE_FALLBACK'
+                        WHEN decision_quality ILIKE '%PROBABILITY_FALLBACK%' THEN 'PROBABILITY_FALLBACK'
+                        WHEN COALESCE(selected_ev,-999) >= 0 THEN 'EV_PRIMARY'
+                        ELSE 'PROBABILITY_FALLBACK'
+                    END,
+                    selection_reason=COALESCE(selection_reason,
+                        CASE
+                            WHEN decision_quality ILIKE '%CROWD_BINANCE%' THEN 'WEAK_EV_CROWD_BINANCE_FALLBACK'
+                            WHEN decision_quality ILIKE '%PROBABILITY_FALLBACK%' THEN 'NEGATIVE_EV_PROBABILITY_FALLBACK'
+                            ELSE 'POSITIVE_EV_BEST_SIDE'
+                        END)
+                WHERE source_key IS NULL
+                """
+            ).format(_ident(_DECISIONS_TABLE))
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                UPDATE {} SET shadow_pnl=CASE
+                    WHEN final_winner NOT IN ('UP','DOWN') OR signal NOT IN ('UP','DOWN') THEN 0
+                    WHEN signal<>final_winner THEN %s
+                    WHEN signal='UP' AND final_coeff_up IS NOT NULL THEN %s*(final_coeff_up-1)
+                    WHEN signal='DOWN' AND final_coeff_down IS NOT NULL THEN %s*(final_coeff_down-1)
+                    ELSE 0 END
+                WHERE COALESCE(settled,FALSE)=TRUE AND shadow_pnl IS NULL
+                """
+            ).format(_ident(_DECISIONS_TABLE)),
+            (-SETTINGS.shadow_stake, SETTINGS.shadow_stake, SETTINGS.shadow_stake),
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {} (
+                    epoch BIGINT PRIMARY KEY,
+                    start_timestamp BIGINT,
+                    lock_timestamp BIGINT,
+                    close_timestamp BIGINT,
+                    lock_price DOUBLE PRECISION,
+                    close_price DOUBLE PRECISION,
+                    lock_oracle_id NUMERIC(78,0),
+                    close_oracle_id NUMERIC(78,0),
+                    total_amount_bnb DOUBLE PRECISION,
+                    bull_amount_bnb DOUBLE PRECISION,
+                    bear_amount_bnb DOUBLE PRECISION,
+                    reward_base_bnb DOUBLE PRECISION,
+                    reward_amount_bnb DOUBLE PRECISION,
+                    oracle_called BOOLEAN,
+                    actual_winner TEXT,
+                    winner_coeff_gross DOUBLE PRECISION,
+                    winner_coeff_net DOUBLE PRECISION,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            ).format(_ident(_ROUNDS_TABLE))
+        )
+        _add_columns(
+            cur,
+            _ROUNDS_TABLE,
+            {
+                "start_timestamp": "BIGINT",
+                "lock_timestamp": "BIGINT",
+                "close_timestamp": "BIGINT",
+                "lock_price": "DOUBLE PRECISION",
+                "close_price": "DOUBLE PRECISION",
+                "lock_oracle_id": "NUMERIC(78,0)",
+                "close_oracle_id": "NUMERIC(78,0)",
+                "total_amount_bnb": "DOUBLE PRECISION",
+                "bull_amount_bnb": "DOUBLE PRECISION",
+                "bear_amount_bnb": "DOUBLE PRECISION",
+                "reward_base_bnb": "DOUBLE PRECISION",
+                "reward_amount_bnb": "DOUBLE PRECISION",
+                "oracle_called": "BOOLEAN",
+                "actual_winner": "TEXT",
+                "winner_coeff_gross": "DOUBLE PRECISION",
+                "winner_coeff_net": "DOUBLE PRECISION",
+                "updated_at": "TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+                "created_at": "TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+            },
+        )
+        cur.execute(
+            sql.SQL("CREATE UNIQUE INDEX IF NOT EXISTS {} ON {} (epoch)").format(
+                _ident(f"{_ROUNDS_TABLE}_epoch_unique"), _ident(_ROUNDS_TABLE)
+            )
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {} (
+                    betting_epoch BIGINT NOT NULL,
+                    live_epoch BIGINT NOT NULL,
+                    seconds_to_lock INTEGER NOT NULL,
+                    bucket INTEGER NOT NULL,
+                    chain_timestamp BIGINT NOT NULL,
+                    chainlink_price DOUBLE PRECISION NOT NULL,
+                    live_move_signed DOUBLE PRECISION,
+                    bull_amount_bnb DOUBLE PRECISION,
+                    bear_amount_bnb DOUBLE PRECISION,
+                    snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY(betting_epoch,bucket)
+                )
+                """
+            ).format(_ident(_SNAPSHOTS_TABLE))
+        )
+        _add_columns(
+            cur,
+            _SNAPSHOTS_TABLE,
+            {
+                "betting_epoch": "BIGINT",
+                "live_epoch": "BIGINT",
+                "seconds_to_lock": "INTEGER",
+                "bucket": "INTEGER",
+                "chain_timestamp": "BIGINT",
+                "chainlink_price": "DOUBLE PRECISION",
+                "live_move_signed": "DOUBLE PRECISION",
+                "bull_amount_bnb": "DOUBLE PRECISION",
+                "bear_amount_bnb": "DOUBLE PRECISION",
+                "snapshot_json": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+                "created_at": "TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+            },
+        )
+        cur.execute(
+            sql.SQL("CREATE UNIQUE INDEX IF NOT EXISTS {} ON {} (betting_epoch,bucket)").format(
+                _ident(f"{_SNAPSHOTS_TABLE}_epoch_bucket_unique"), _ident(_SNAPSHOTS_TABLE)
+            )
+        )
+        c.commit()
 
 
-def get_state() -> dict[str, Any]:
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM fusion_state WHERE id=1")
+def ping() -> bool:
+    try:
+        with conn() as c, c.cursor() as cur:
+            cur.execute("SELECT 1")
+            return bool(cur.fetchone()[0])
+    except Exception:
+        return False
+
+
+def get_state(for_update: bool = False, cursor=None) -> dict[str, Any]:
+    if cursor is not None:
+        query = sql.SQL("SELECT * FROM {} WHERE id=1{}").format(
+            _ident(_STATE_TABLE), sql.SQL(" FOR UPDATE" if for_update else "")
+        )
+        cursor.execute(query)
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    with conn() as c, c.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(sql.SQL("SELECT * FROM {} WHERE id=1").format(_ident(_STATE_TABLE)))
         row = cur.fetchone()
         return dict(row) if row else {}
 
 
-def get_decision(epoch: int) -> Optional[dict[str, Any]]:
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM fusion_decisions WHERE betting_epoch=%s", (int(epoch),))
+def insert_decision(data: dict[str, Any]) -> dict[str, Any]:
+    columns = [
+        "betting_epoch", "live_epoch", "locked_at_chain_timestamp",
+        "locked_at_seconds_to_lock", "signal", "probability_up",
+        "probability_down", "expected_coeff_up", "expected_coeff_down",
+        "ev_up", "ev_down", "selected_ev", "agreement", "decision_quality",
+        "stake", "bank_before", "components_json", "weights_json",
+        "features_json", "snapshot_json", "raw_expected_coeff_up",
+        "raw_expected_coeff_down", "payout_correction_up",
+        "payout_correction_down", "strategy_version", "payout_bucket_up",
+        "payout_bucket_down", "trade_executed", "no_trade_reason",
+        "source_key", "selection_reason", "fib_line", "fib_index", "fib_step",
+        "shadow_allowed", "shadow_reason", "shadow_stats_json",
+        "stake_mode", "stake_tier", "cooldown_applied",
+    ]
+    values = []
+    json_cols = {"components_json", "weights_json", "features_json", "snapshot_json", "shadow_stats_json"}
+    for col in columns:
+        value = data.get(col)
+        values.append(Json(value if value is not None else ([] if col == "components_json" else {})) if col in json_cols else value)
+    with conn() as c, c.cursor(cursor_factory=RealDictCursor) as cur:
+        query = sql.SQL("INSERT INTO {} ({}) VALUES ({}) ON CONFLICT (betting_epoch) DO NOTHING RETURNING *").format(
+            _ident(_DECISIONS_TABLE),
+            sql.SQL(",").join(map(sql.Identifier, columns)),
+            sql.SQL(",").join(sql.Placeholder() for _ in columns),
+        )
+        cur.execute(query, values)
         row = cur.fetchone()
-        return dict(row) if row else None
+        c.commit()
+    return dict(row) if row else (get_decision(int(data["betting_epoch"])) or {})
 
 
-def insert_decision(data: dict[str, Any]) -> bool:
-    with connect() as conn, conn.cursor() as cur:
+def unsettled_decisions(limit: int = 100) -> list[dict[str, Any]]:
+    with conn() as c, c.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
-            """
-            INSERT INTO fusion_decisions(
-                betting_epoch,live_epoch,strategy_version,locked_at_chain_timestamp,locked_at_seconds_to_lock,
-                signal,trade_executed,no_trade_reason,probability_up,probability_down,
-                raw_expected_coeff_up,raw_expected_coeff_down,payout_correction_up,payout_correction_down,
-                payout_bucket_up,payout_bucket_down,
-                expected_coeff_up,expected_coeff_down,
-                ev_up,ev_down,selected_ev,agreement,decision_quality,stake,bank_before,
-                components_json,weights_json,features_json,snapshot_json
-            ) VALUES(
-                %(betting_epoch)s,%(live_epoch)s,%(strategy_version)s,%(locked_at_chain_timestamp)s,%(locked_at_seconds_to_lock)s,
-                %(signal)s,%(trade_executed)s,%(no_trade_reason)s,%(probability_up)s,%(probability_down)s,
-                %(raw_expected_coeff_up)s,%(raw_expected_coeff_down)s,%(payout_correction_up)s,%(payout_correction_down)s,
-                %(payout_bucket_up)s,%(payout_bucket_down)s,
-                %(expected_coeff_up)s,%(expected_coeff_down)s,
-                %(ev_up)s,%(ev_down)s,%(selected_ev)s,%(agreement)s,%(decision_quality)s,%(stake)s,%(bank_before)s,
-                %(components_json)s,%(weights_json)s,%(features_json)s,%(snapshot_json)s
-            ) ON CONFLICT(betting_epoch) DO NOTHING
-            """,
-            {
-                **data,
-                "components_json": Jsonb(data["components"]),
-                "weights_json": Jsonb(data["weights"]),
-                "features_json": Jsonb(data["features"]),
-                "snapshot_json": Jsonb(data["snapshot"]),
-            },
+            sql.SQL(
+                "SELECT * FROM {} WHERE COALESCE(settled,FALSE)=FALSE ORDER BY betting_epoch ASC LIMIT %s"
+            ).format(_ident(_DECISIONS_TABLE)),
+            (int(limit),),
         )
-        inserted = cur.rowcount == 1
-        conn.commit()
-        return inserted
+        return [dict(r) for r in cur.fetchall()]
 
 
-def unsettled_decisions(limit: int = 50) -> list[dict[str, Any]]:
-    with connect() as conn, conn.cursor() as cur:
+def settle_decision_atomic(
+    epoch: int,
+    *,
+    final_winner: str,
+    final_coeff_gross: float | None,
+    final_coeff_net: float | None,
+    final_coeff_up: float | None,
+    final_coeff_down: float | None,
+    final_move_points: float | None,
+    outcome: str,
+    pnl: float,
+    shadow_pnl: float,
+    actual_ev_signal: float | None,
+    payout_ratio_signal: float | None,
+) -> bool:
+    with _LOCK, conn() as c, c.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
-            "SELECT * FROM fusion_decisions WHERE settled=FALSE ORDER BY betting_epoch ASC LIMIT %s",
-            (max(1, min(limit, 500)),),
-        )
-        return [dict(row) for row in cur.fetchall()]
-
-
-def _hypothetical_final_coefficients(row: RoundData) -> tuple[Optional[float], Optional[float]]:
-    total = float(row.total_amount_bnb or 0.0)
-    net_pool = total * (1.0 - settings.treasury_fee)
-    up = net_pool / float(row.bull_amount_bnb) if row.bull_amount_bnb and row.bull_amount_bnb > 0 else None
-    down = net_pool / float(row.bear_amount_bnb) if row.bear_amount_bnb and row.bear_amount_bnb > 0 else None
-    return up, down
-
-
-def settle_decision_atomic(epoch: int, row: RoundData) -> bool:
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT * FROM fusion_decisions WHERE betting_epoch=%s FOR UPDATE",
+            sql.SQL("SELECT * FROM {} WHERE betting_epoch=%s FOR UPDATE").format(
+                _ident(_DECISIONS_TABLE)
+            ),
             (int(epoch),),
         )
         decision = cur.fetchone()
-        if not decision or decision["settled"]:
-            conn.rollback()
+        if not decision or decision.get("settled"):
+            c.rollback()
             return False
+        state = get_state(for_update=True, cursor=cur)
+        bank_before_settlement = float(state.get("bank") or SETTINGS.start_bank)
+        trade_executed = bool(decision.get("trade_executed"))
+        new_bank = bank_before_settlement + (float(pnl) if trade_executed else 0.0)
 
-        cur.execute("SELECT * FROM fusion_state WHERE id=1 FOR UPDATE")
-        state = cur.fetchone()
-        signal = str(decision["signal"])
-        winner = row.actual_winner or "DRAW"
-        trade_executed = bool(decision.get("trade_executed", True))
-        stake = float(decision["stake"] or 0.0)
+        wins = int(state.get("wins") or 0)
+        losses = int(state.get("losses") or 0)
+        draws = int(state.get("draws") or 0)
+        trades = int(state.get("trades_count") or 0)
+        current_loss = int(state.get("current_loss_streak") or 0)
+        max_loss = int(state.get("max_loss_streak") or 0)
+        cooldown_remaining = int(state.get("cooldown_rounds_remaining") or 0)
+        cooldown_trigger_count = int(state.get("cooldown_trigger_count") or 0)
+        if trade_executed:
+            trades += 1
+            if outcome == "WIN":
+                wins += 1
+                current_loss = 0
+            elif outcome == "LOSS":
+                losses += 1
+                current_loss += 1
+                max_loss = max(max_loss, current_loss)
+                if should_arm_cooldown(current_loss):
+                    cooldown_remaining = max(cooldown_remaining, int(SETTINGS.cooldown_rounds))
+                    cooldown_trigger_count += 1
+            else:
+                draws += 1
+                current_loss = 0
 
-        if not trade_executed or stake <= 0:
-            outcome = "SKIP"
-            pnl = 0.0
-        elif winner == "DRAW":
-            outcome = "DRAW"
-            pnl = 0.0
-        elif signal == winner:
-            outcome = "WIN"
-            coeff = float(
-                row.winner_coeff_net
-                or ((row.winner_coeff_gross or 1.0) * (1 - settings.treasury_fee))
-            )
-            pnl = stake * (coeff - 1.0)
-        else:
-            outcome = "LOSS"
-            pnl = -stake
 
-        bank_before = float(state["bank"])
-        bank_after = bank_before + pnl
-        final_coeff_up, final_coeff_down = _hypothetical_final_coefficients(row)
-        selected_final_coeff = final_coeff_up if signal == "UP" else final_coeff_down
-        selected_probability = (
-            float(decision["probability_up"])
-            if signal == "UP"
-            else float(decision["probability_down"])
-        )
-        actual_ev_signal = (
-            selected_probability * selected_final_coeff - 1.0
-            if selected_final_coeff is not None
-            else None
-        )
-        raw_selected_coeff = (
-            decision.get("raw_expected_coeff_up")
-            if signal == "UP"
-            else decision.get("raw_expected_coeff_down")
-        )
-        if raw_selected_coeff is None:
-            raw_selected_coeff = (
-                decision.get("expected_coeff_up")
-                if signal == "UP"
-                else decision.get("expected_coeff_down")
-            )
-        payout_ratio_signal = (
-            selected_final_coeff / float(raw_selected_coeff)
-            if selected_final_coeff is not None
-            and raw_selected_coeff is not None
-            and float(raw_selected_coeff) > 1.0
-            else None
-        )
-
-        if outcome == "SKIP":
-            wins = int(state["wins"])
-            losses = int(state["losses"])
-            draws = int(state["draws"])
-            trades = int(state["trades_count"])
-            current_streak = int(state["current_loss_streak"])
-            max_streak = int(state["max_loss_streak"])
-            peak_bank = float(state["peak_bank"])
-            max_drawdown = float(state["max_drawdown"])
-        else:
-            wins = int(state["wins"]) + (1 if outcome == "WIN" else 0)
-            losses = int(state["losses"]) + (1 if outcome == "LOSS" else 0)
-            draws = int(state["draws"]) + (1 if outcome == "DRAW" else 0)
-            trades = int(state["trades_count"]) + 1
-            current_streak = (
-                int(state["current_loss_streak"]) + 1 if outcome == "LOSS" else 0
-            )
-            max_streak = max(int(state["max_loss_streak"]), current_streak)
-            peak_bank = max(float(state["peak_bank"]), bank_after)
-            drawdown = peak_bank - bank_after
-            max_drawdown = max(float(state["max_drawdown"]), drawdown)
-
+        peak = max(float(state.get("peak_bank") or bank_before_settlement), new_bank)
+        max_drawdown = max(float(state.get("max_drawdown") or 0.0), peak - new_bank)
         cur.execute(
-            """
-            UPDATE fusion_decisions SET
-                settled=TRUE,final_winner=%s,final_coeff_gross=%s,final_coeff_net=%s,
-                final_move_points=%s,outcome=%s,pnl=%s,
-                bank_before_settlement=%s,bank_after=%s,
-                final_coeff_up=%s,final_coeff_down=%s,
-                actual_ev_signal=%s,payout_ratio_signal=%s,
-                settled_at=NOW(),updated_at=NOW()
-            WHERE betting_epoch=%s
-            """,
+            sql.SQL(
+                """
+                UPDATE {} SET
+                    bank=%s,wins=%s,losses=%s,draws=%s,trades_count=%s,
+                    current_loss_streak=%s,max_loss_streak=%s,peak_bank=%s,
+                    max_drawdown=%s,cooldown_rounds_remaining=%s,
+                    cooldown_trigger_count=%s,
+                    last_settled_epoch=GREATEST(COALESCE(last_settled_epoch,0),%s),
+                    updated_at=NOW()
+                WHERE id=1
+                """
+            ).format(_ident(_STATE_TABLE)),
             (
-                winner,
-                row.winner_coeff_gross,
-                row.winner_coeff_net,
-                row.move_points,
-                outcome,
-                pnl,
-                bank_before,
-                bank_after,
-                final_coeff_up,
-                final_coeff_down,
-                actual_ev_signal,
-                payout_ratio_signal,
-                int(epoch),
+                new_bank, wins, losses, draws, trades, current_loss, max_loss,
+                peak, max_drawdown, cooldown_remaining, cooldown_trigger_count, int(epoch),
             ),
         )
         cur.execute(
-            """
-            UPDATE fusion_state SET
-                bank=%s,wins=%s,losses=%s,draws=%s,trades_count=%s,
-                current_loss_streak=%s,max_loss_streak=%s,peak_bank=%s,max_drawdown=%s,
-                last_settled_epoch=%s,updated_at=NOW()
-            WHERE id=1
-            """,
+            sql.SQL(
+                """
+                UPDATE {} SET
+                    settled=TRUE,final_winner=%s,final_coeff_gross=%s,
+                    final_coeff_net=%s,final_coeff_up=%s,final_coeff_down=%s,
+                    final_move_points=%s,outcome=%s,pnl=%s,shadow_pnl=%s,
+                    bank_before_settlement=%s,bank_after=%s,actual_ev_signal=%s,
+                    payout_ratio_signal=%s,settled_at=NOW(),updated_at=NOW()
+                WHERE betting_epoch=%s AND COALESCE(settled,FALSE)=FALSE
+                """
+            ).format(_ident(_DECISIONS_TABLE)),
             (
-                bank_after,
-                wins,
-                losses,
-                draws,
-                trades,
-                current_streak,
-                max_streak,
-                peak_bank,
-                max_drawdown,
-                int(epoch),
+                final_winner, final_coeff_gross, final_coeff_net, final_coeff_up,
+                final_coeff_down, final_move_points, outcome,
+                float(pnl) if trade_executed else 0.0, float(shadow_pnl),
+                bank_before_settlement, new_bank, actual_ev_signal,
+                payout_ratio_signal, int(epoch),
             ),
         )
-        conn.commit()
+        changed = cur.rowcount == 1
+        c.commit()
+        return changed
+
+
+
+def consume_cooldown_round() -> bool:
+    """Atomically consume one pending cooldown decision, if any."""
+    with _LOCK, conn() as c, c.cursor(cursor_factory=RealDictCursor) as cur:
+        state = get_state(for_update=True, cursor=cur)
+        remaining = int(state.get("cooldown_rounds_remaining") or 0)
+        if remaining <= 0:
+            c.commit()
+            return False
+        cur.execute(
+            sql.SQL(
+                "UPDATE {} SET cooldown_rounds_remaining=%s,updated_at=NOW() WHERE id=1"
+            ).format(_ident(_STATE_TABLE)),
+            (remaining - 1,),
+        )
+        c.commit()
         return True
 
-
-def decision_history(limit: int = 30, offset: int = 0, ascending: bool = False) -> list[dict[str, Any]]:
-    safe_limit = max(1, min(int(limit), settings.history_api_max_limit))
-    safe_offset = max(0, int(offset))
-    order = "ASC" if ascending else "DESC"
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            f"SELECT * FROM fusion_decisions ORDER BY betting_epoch {order} LIMIT %s OFFSET %s",
-            (safe_limit, safe_offset),
-        )
-        return [dict(row) for row in cur.fetchall()]
-
-
-def decision_count() -> int:
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) AS count FROM fusion_decisions")
-        row = cur.fetchone()
-        return int(row["count"])
-
-
-def settled_component_history(limit: int = 300) -> list[dict[str, Any]]:
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT betting_epoch,components_json,final_winner
-            FROM fusion_decisions
-            WHERE settled=TRUE AND final_winner IN ('UP','DOWN')
-            ORDER BY betting_epoch DESC LIMIT %s
-            """,
-            (max(1, min(limit, 5000)),),
-        )
-        return [dict(row) for row in cur.fetchall()]
-
-
-def payout_calibration_history(limit: int = 300) -> list[dict[str, Any]]:
-    safe = max(1, min(int(limit), 5000))
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT betting_epoch,
-                   raw_expected_coeff_up,raw_expected_coeff_down,
-                   expected_coeff_up,expected_coeff_down,
-                   final_coeff_up,final_coeff_down
-            FROM fusion_decisions
-            WHERE settled=TRUE
-              AND final_coeff_up IS NOT NULL
-              AND final_coeff_down IS NOT NULL
-            ORDER BY betting_epoch DESC LIMIT %s
-            """,
-            (safe,),
-        )
-        return [dict(row) for row in cur.fetchall()]
-
-
-def strategy_performance() -> list[dict[str, Any]]:
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT COALESCE(strategy_version, 'legacy') AS strategy_version,
-                   COUNT(*) FILTER (WHERE settled=TRUE) AS decisions_settled,
-                   COUNT(*) FILTER (WHERE settled=TRUE AND trade_executed=TRUE) AS trades,
-                   COUNT(*) FILTER (WHERE outcome='SKIP') AS skipped,
-                   COUNT(*) FILTER (WHERE outcome='WIN') AS wins,
-                   COUNT(*) FILTER (WHERE outcome='LOSS') AS losses,
-                   COUNT(*) FILTER (WHERE outcome='DRAW') AS draws,
-                   COALESCE(SUM(pnl) FILTER (WHERE settled=TRUE AND trade_executed=TRUE), 0) AS profit,
-                   MIN(betting_epoch) AS first_epoch,
-                   MAX(betting_epoch) AS last_epoch
-            FROM fusion_decisions
-            GROUP BY COALESCE(strategy_version, 'legacy')
-            ORDER BY MIN(betting_epoch)
-            """
-        )
-        rows = [dict(row) for row in cur.fetchall()]
-    for row in rows:
-        decisions = int(row.get("decisions_settled") or 0)
-        trades = int(row.get("trades") or 0)
-        wins = int(row.get("wins") or 0)
-        row["win_rate"] = wins / trades if trades else 0.0
-        row["trade_rate"] = trades / decisions if decisions else 0.0
-    return rows
-
-
-def export_csv() -> str:
-    rows = decision_history(limit=settings.history_api_max_limit, ascending=True)
-    output = io.StringIO()
-    fields = [
-        "betting_epoch","strategy_version","signal","trade_executed","no_trade_reason","probability_up","probability_down",
-        "raw_expected_coeff_up","raw_expected_coeff_down",
-        "payout_correction_up","payout_correction_down",
-        "payout_bucket_up","payout_bucket_down",
-        "expected_coeff_up","expected_coeff_down",
-        "ev_up","ev_down","selected_ev","agreement","decision_quality","stake",
-        "bank_before","bank_before_settlement","bank_after",
-        "final_winner","final_coeff_net","final_coeff_up","final_coeff_down",
-        "actual_ev_signal","payout_ratio_signal","outcome","pnl","locked_at_seconds_to_lock",
-        "created_at","settled_at",
+def upsert_round(data: dict[str, Any]) -> None:
+    cols = [
+        "epoch", "start_timestamp", "lock_timestamp", "close_timestamp",
+        "lock_price", "close_price", "lock_oracle_id", "close_oracle_id",
+        "total_amount_bnb", "bull_amount_bnb", "bear_amount_bnb",
+        "reward_base_bnb", "reward_amount_bnb", "oracle_called",
+        "actual_winner", "winner_coeff_gross", "winner_coeff_net",
     ]
-    writer = csv.DictWriter(output, fieldnames=fields)
-    writer.writeheader()
-    for row in rows:
-        writer.writerow({key: row.get(key) for key in fields})
-    return output.getvalue()
-
-
-def reset_all() -> None:
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute("TRUNCATE fusion_decisions,fusion_snapshots,fusion_rounds RESTART IDENTITY")
-        cur.execute("DELETE FROM fusion_state WHERE id=1")
-        cur.execute(
-            "INSERT INTO fusion_state(id,start_bank,bank,peak_bank) VALUES(1,%s,%s,%s)",
-            (settings.start_bank,settings.start_bank,settings.start_bank),
+    values = [data.get(c) for c in cols]
+    with conn() as c, c.cursor() as cur:
+        query = sql.SQL(
+            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT (epoch) DO UPDATE SET {}"
+        ).format(
+            _ident(_ROUNDS_TABLE),
+            sql.SQL(",").join(map(sql.Identifier, cols)),
+            sql.SQL(",").join(sql.Placeholder() for _ in cols),
+            sql.SQL(",").join(
+                sql.SQL("{}=EXCLUDED.{}").format(_ident(x), _ident(x))
+                for x in cols if x != "epoch"
+            ) + sql.SQL(",updated_at=NOW()"),
         )
-        conn.commit()
+        cur.execute(query, values)
+        c.commit()
+
+
+def recent_rounds(limit: int = 1200) -> list[dict[str, Any]]:
+    with conn() as c, c.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT * FROM {} WHERE actual_winner IN ('UP','DOWN') ORDER BY epoch DESC LIMIT %s"
+            ).format(_ident(_ROUNDS_TABLE)),
+            (int(limit),),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        rows.reverse()
+        return rows
+
+
+def save_snapshot(data: dict[str, Any]) -> bool:
+    bucket = int(data["seconds_to_lock"]) // max(1, SETTINGS.snapshot_bucket_seconds)
+    with conn() as c, c.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}(
+                    betting_epoch,live_epoch,seconds_to_lock,bucket,chain_timestamp,
+                    chainlink_price,live_move_signed,bull_amount_bnb,bear_amount_bnb,snapshot_json
+                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (betting_epoch,bucket) DO NOTHING
+                """
+            ).format(_ident(_SNAPSHOTS_TABLE)),
+            (
+                int(data["betting_epoch"]), int(data["live_epoch"]),
+                int(data["seconds_to_lock"]), bucket, int(data["chain_timestamp"]),
+                float(data["chainlink_price"]), float(data["live_move_signed"]),
+                float(data.get("bull_amount_bnb") or 0),
+                float(data.get("bear_amount_bnb") or 0), Json(data),
+            ),
+        )
+        changed = cur.rowcount == 1
+        c.commit()
+        return changed
+
+
+def snapshots_for_epoch(betting_epoch: int, limit: int = 30) -> list[dict[str, Any]]:
+    with conn() as c, c.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT * FROM {} WHERE betting_epoch=%s ORDER BY seconds_to_lock DESC LIMIT %s"
+            ).format(_ident(_SNAPSHOTS_TABLE)),
+            (int(betting_epoch), int(limit)),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def history(
+    limit: int = 100,
+    offset: int = 0,
+    *,
+    settled_only: bool = False,
+    trades_only: bool = False,
+) -> list[dict[str, Any]]:
+    clauses = []
+    params: list[Any] = []
+    if settled_only:
+        clauses.append("COALESCE(settled,FALSE)=TRUE")
+    if trades_only:
+        clauses.append("COALESCE(trade_executed,FALSE)=TRUE")
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    safe_limit = max(1, min(int(limit), SETTINGS.history_api_max_limit))
+    with conn() as c, c.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            sql.SQL("SELECT * FROM {}{} ORDER BY betting_epoch DESC LIMIT %s OFFSET %s").format(
+                _ident(_DECISIONS_TABLE), sql.SQL(where)
+            ),
+            (*params, safe_limit, max(0, int(offset))),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def history_count(*, settled_only: bool = False, trades_only: bool = False) -> int:
+    clauses = []
+    if settled_only:
+        clauses.append("COALESCE(settled,FALSE)=TRUE")
+    if trades_only:
+        clauses.append("COALESCE(trade_executed,FALSE)=TRUE")
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    with conn() as c, c.cursor() as cur:
+        cur.execute(
+            sql.SQL("SELECT COUNT(*) FROM {}{}").format(
+                _ident(_DECISIONS_TABLE), sql.SQL(where)
+            )
+        )
+        return int(cur.fetchone()[0])
+
+
+def shadow_rows(source_key: str, signal: str | None, lookback: int) -> list[dict[str, Any]]:
+    clauses = [
+        "COALESCE(settled,FALSE)=TRUE",
+        "final_winner IN ('UP','DOWN')",
+        "source_key=%s",
+    ]
+    params: list[Any] = [source_key]
+    if signal:
+        clauses.append("signal=%s")
+        params.append(signal)
+    with conn() as c, c.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT betting_epoch,signal,final_winner,final_coeff_up,final_coeff_down,shadow_pnl FROM {} WHERE {} ORDER BY betting_epoch DESC LIMIT %s"
+            ).format(_ident(_DECISIONS_TABLE), sql.SQL(" AND ".join(clauses))),
+            (*params, int(lookback)),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def payout_ratios(side: str, bucket: str, lookback: int) -> list[float]:
+    raw_col = "raw_expected_coeff_up" if side == "UP" else "raw_expected_coeff_down"
+    final_col = "final_coeff_up" if side == "UP" else "final_coeff_down"
+    bucket_col = "payout_bucket_up" if side == "UP" else "payout_bucket_down"
+    with conn() as c, c.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT {final},{raw} FROM {table} WHERE COALESCE(settled,FALSE)=TRUE AND {bucket}=%s AND {final}>0 AND {raw}>0 ORDER BY betting_epoch DESC LIMIT %s"
+            ).format(
+                final=_ident(final_col), raw=_ident(raw_col),
+                table=_ident(_DECISIONS_TABLE), bucket=_ident(bucket_col),
+            ),
+            (bucket, int(lookback)),
+        )
+        ratios = []
+        for final_value, raw_value in cur.fetchall():
+            try:
+                ratio = float(final_value) / float(raw_value)
+                if math.isfinite(ratio) and ratio > 0:
+                    ratios.append(ratio)
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+        return ratios
+
+
+def table_names() -> dict[str, str]:
+    return {
+        "decisions": _DECISIONS_TABLE,
+        "state": _STATE_TABLE,
+        "rounds": _ROUNDS_TABLE,
+        "snapshots": _SNAPSHOTS_TABLE,
+    }

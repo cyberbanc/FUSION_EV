@@ -1,108 +1,42 @@
-# M9 FUSION EV 1.3.3 — Negative fallback filter
+# M9 Fusion EV 1.3.6 — Adaptive EV Stakes + Shadow Quality
 
-Paper-бот для PancakeSwap Prediction BNB. Решение фиксируется примерно в T−40. Версия 1.3.3 полностью сохраняет архитектуру 1.3.2 и добавляет отдельную блокировку убыточной категории `NEGATIVE_EV_PROBABILITY_FALLBACK`.
+Paper-бот PancakeSwap Prediction с переменной ставкой по силе рассчитанного EV, динамическим shadow-фильтром и защитным пропуском после серии проигрышей.
 
-## Главное изменение 1.3.3
+## Ставки
 
-```text
-selection_reason = NEGATIVE_EV_PROBABILITY_FALLBACK
-NEGATIVE_FALLBACK_ENABLED=false
-    → NO_TRADE, даже если selected_ev > MIN_TRADE_EV
-```
+- `-0.06 <= selected_ev < 0` → **$5**
+- `0 <= selected_ev < 0.05` → **$10**
+- `selected_ev >= 0.05` → **$15**
+- `selected_ev < -0.06` → `NO_TRADE`
 
-Другие категории не блокируются этим правилом:
+Размер не зависит от прошлых результатов. Fibonacci и мартингейл не используются.
 
-```text
-WEAK_EV_CROWD_BINANCE_FALLBACK
-WEAK_EV_PROBABILITY_FALLBACK
-BEST_CORRECTED_EV
-EV_REVERSAL_BLOCKED_PROBABILITY_FALLBACK
-```
+## Shadow-фильтр
 
-Они продолжают использовать обычный EV-фильтр и проверку payout bucket.
+Статистика считается отдельно для каждого `source_key + signal`:
 
-## Основные Railway Variables
+- последние 8 shadow-сигналов должны иметь PnL выше `-$30`;
+- после 10 накопленных результатов последние 30 должны иметь win rate не ниже 45% и Profit Factor не ниже 0.85;
+- все пропущенные сигналы всё равно закрываются в shadow-режиме, поэтому источник может автоматически восстановиться.
 
-```text
-TRADE_FILTER_ENABLED=true
-MIN_TRADE_EV=-0.10
-NEGATIVE_FALLBACK_ENABLED=false
-REQUIRE_PAYOUT_BUCKET_READY=true
-CONSENSUS_OVERRIDE_ENABLED=false
-```
+## Защита от просадки
 
-Полный набор находится в `RAILWAY_VARIABLES.txt`.
+После каждой завершённой серии из трёх реальных проигрышей бот пропускает одно следующее создаваемое решение. Затем торговля продолжается по обычным правилам.
 
-## Логика сделки
+## Совместимость
 
-```text
-1. Если выбранный payout bucket не готов → NO_TRADE.
-2. Если NEGATIVE_EV_PROBABILITY_FALLBACK отключён → NO_TRADE.
-3. Если selected_ev > MIN_TRADE_EV → ставка BASE_STAKE.
-4. Если отдельно включён Crowd+Binance override и выполнены его условия → ставка override.
-5. Иначе → NO_TRADE.
-```
+- существующая PostgreSQL сохраняется;
+- банк и история не сбрасываются;
+- миграция добавляет новые колонки автоматически;
+- старые закрытые решения используются как shadow-история, если в них есть необходимые поля.
 
-По умолчанию Crowd+Binance override выключен.
+## Эндпоинты
 
-## Новые диагностические поля
+- `/health`
+- `/signal`
+- `/status?history=recent&limit=30`
+- `/history/export.csv`
+- `/shadow/performance`
+- `/model/performance`
 
-В `features_json` и `/signal` сохраняются:
-
-```text
-negative_fallback_enabled
-negative_fallback_blocked
-normal_ev_pass
-selection_reason
-trade_rule
-no_trade_reason
-```
-
-Пример заблокированного сигнала:
-
-```json
-{
-  "selection_reason": "NEGATIVE_EV_PROBABILITY_FALLBACK",
-  "normal_ev_pass": true,
-  "negative_fallback_enabled": false,
-  "negative_fallback_blocked": true,
-  "trade_executed": false,
-  "stake": 0.0,
-  "no_trade_reason": "NEGATIVE_FALLBACK_DISABLED",
-  "trade_rule": "NO_TRADE"
-}
-```
-
-Новые решения маркируются `strategy_version=1.3.3`.
-
-## API
-
-```text
-/health
-/signal
-/status?limit=30
-/status?history=all&limit=100000
-/history/export.csv
-/payout/calibration
-/model/performance
-/strategy/performance
-```
-
-## История и база
-
-PostgreSQL удалять или пересоздавать не нужно. Новых колонок нет: новые поля сохраняются в существующем `features_json`. Старая история полностью сохраняется.
-
-## Обновление GitHub и Railway
-
-1. Распакуйте ZIP.
-2. Полностью замените файлы текущего GitHub-репозитория содержимым папки `FUSION_EV-1.3.3`.
-3. PostgreSQL в Railway не удаляйте.
-4. Сверьте Variables с `RAILWAY_VARIABLES.txt`.
-5. Оставьте одну replica.
-6. Выполните Redeploy.
-7. Проверьте `/health`: версия `1.3.3`, `negative_fallback_enabled=false`, `consensus_override_enabled=false`.
-8. В следующем `NEGATIVE_EV_PROBABILITY_FALLBACK` проверьте `/signal`: `negative_fallback_blocked=true` и `trade_executed=false`.
-
-## Режим
-
-Только PAPER. Приватный ключ не используется. Реальные транзакции не отправляются.
+Подробная установка: `INSTALL_FUSION_EV_1.3.6.txt`.

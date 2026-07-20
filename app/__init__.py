@@ -1,3 +1,1 @@
-"""M9 FUSION EV package."""
-
-__version__ = "1.3.3"
+"""M9 Fusion EV paper bot v1.3.6 adaptive EV stakes and shadow quality filter."""

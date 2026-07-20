@@ -1,51 +1,47 @@
-from __future__ import annotations
-
-from typing import Any
-
-PREDICTION_ABI: list[dict[str, Any]] = [
+PREDICTION_ABI = [
     {
         "inputs": [],
         "name": "currentEpoch",
-        "outputs": [{"type": "uint256", "name": ""}],
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
         "stateMutability": "view",
         "type": "function",
     },
     {
         "inputs": [],
         "name": "oracle",
-        "outputs": [{"type": "address", "name": ""}],
+        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
         "stateMutability": "view",
         "type": "function",
     },
     {
-        "inputs": [{"type": "uint256", "name": ""}],
+        "inputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
         "name": "rounds",
         "outputs": [
-            {"type": "uint256", "name": "epoch"},
-            {"type": "uint256", "name": "startTimestamp"},
-            {"type": "uint256", "name": "lockTimestamp"},
-            {"type": "uint256", "name": "closeTimestamp"},
-            {"type": "int256", "name": "lockPrice"},
-            {"type": "int256", "name": "closePrice"},
-            {"type": "uint256", "name": "lockOracleId"},
-            {"type": "uint256", "name": "closeOracleId"},
-            {"type": "uint256", "name": "totalAmount"},
-            {"type": "uint256", "name": "bullAmount"},
-            {"type": "uint256", "name": "bearAmount"},
-            {"type": "uint256", "name": "rewardBaseCalAmount"},
-            {"type": "uint256", "name": "rewardAmount"},
-            {"type": "bool", "name": "oracleCalled"},
+            {"internalType": "uint256", "name": "epoch", "type": "uint256"},
+            {"internalType": "uint256", "name": "startTimestamp", "type": "uint256"},
+            {"internalType": "uint256", "name": "lockTimestamp", "type": "uint256"},
+            {"internalType": "uint256", "name": "closeTimestamp", "type": "uint256"},
+            {"internalType": "int256", "name": "lockPrice", "type": "int256"},
+            {"internalType": "int256", "name": "closePrice", "type": "int256"},
+            {"internalType": "uint256", "name": "lockOracleId", "type": "uint256"},
+            {"internalType": "uint256", "name": "closeOracleId", "type": "uint256"},
+            {"internalType": "uint256", "name": "totalAmount", "type": "uint256"},
+            {"internalType": "uint256", "name": "bullAmount", "type": "uint256"},
+            {"internalType": "uint256", "name": "bearAmount", "type": "uint256"},
+            {"internalType": "uint256", "name": "rewardBaseCalAmount", "type": "uint256"},
+            {"internalType": "uint256", "name": "rewardAmount", "type": "uint256"},
+            {"internalType": "bool", "name": "oracleCalled", "type": "bool"},
         ],
         "stateMutability": "view",
         "type": "function",
     },
 ]
 
-AGGREGATOR_V3_ABI: list[dict[str, Any]] = [
+CHAINLINK_ABI = [
     {
         "inputs": [],
         "name": "decimals",
-        "outputs": [{"type": "uint8", "name": ""}],
+        "outputs": [{"internalType": "uint8", "name": "", "type": "uint8"}],
         "stateMutability": "view",
         "type": "function",
     },
@@ -53,11 +49,11 @@ AGGREGATOR_V3_ABI: list[dict[str, Any]] = [
         "inputs": [],
         "name": "latestRoundData",
         "outputs": [
-            {"type": "uint80", "name": "roundId"},
-            {"type": "int256", "name": "answer"},
-            {"type": "uint256", "name": "startedAt"},
-            {"type": "uint256", "name": "updatedAt"},
-            {"type": "uint80", "name": "answeredInRound"},
+            {"internalType": "uint80", "name": "roundId", "type": "uint80"},
+            {"internalType": "int256", "name": "answer", "type": "int256"},
+            {"internalType": "uint256", "name": "startedAt", "type": "uint256"},
+            {"internalType": "uint256", "name": "updatedAt", "type": "uint256"},
+            {"internalType": "uint80", "name": "answeredInRound", "type": "uint80"},
         ],
         "stateMutability": "view",
         "type": "function",

@@ -1,351 +1,48 @@
-from app.ensemble import (
-    adaptive_weights,
-    apply_payout_correction,
-    calibration_for_raw,
-    m9_component,
-    payout_calibration,
-    select_side_and_stake,
-)
-from app.config import settings
-from app.models import ComponentSignal
+from unittest.mock import patch
+
+from app.ensemble import forecast
+from app.models import MarketSnapshot, RoundData
 
 
-def _set_setting(name: str, value):
-    old = getattr(settings, name)
-    object.__setattr__(settings, name, value)
-    return old
-
-
-def _round(epoch: int, winner: str, coeff: float = 2.0):
-    return {
-        "epoch": epoch,
-        "actual_winner": winner,
-        "winner_coeff_gross": coeff,
-        "move_points": 0.2,
-    }
-
-
-def test_m9_bayesian_smoothing_never_turns_few_matches_into_100_percent():
-    winners = [
-        "UP", "DOWN", "UP", "DOWN", "UP", "UP",
-        "DOWN", "UP", "DOWN", "UP", "UP", "DOWN",
-    ]
-    result = m9_component([_round(i, winner) for i, winner in enumerate(winners)])
-    assert 0.38 <= result.probability_up <= 0.62
-    assert result.probability_up != 1.0
-
-
-def test_m9_and_patterns_have_zero_voting_weight_by_default():
-    components = [
-        ComponentSignal("price", 0.55, 1.0, True, "test"),
-        ComponentSignal("binance", 0.55, 1.0, True, "test"),
-        ComponentSignal("crowd", 0.55, 1.0, True, "test"),
-        ComponentSignal("m9", 0.62, 1.0, True, "test"),
-        ComponentSignal("pattern", 0.62, 1.0, True, "test"),
-    ]
-    weights = adaptive_weights(components, [])
-    assert weights["m9"] == 0.0
-    assert weights["pattern"] == 0.0
-    assert abs(sum(weights.values()) - 1.0) < 1e-12
-
-
-def test_ev_reversal_below_35_percent_is_blocked():
-    result = select_side_and_stake(
-        probability_up=0.55,
-        coeff_up=1.40,
-        coeff_down=2.95,  # DOWN EV 32.75%, below reversal threshold
-        agreement_up=0.65,
-        state={"trades_count": 500, "bank": 500},
-        payout_ready_up=True,
-        payout_ready_down=True,
-        crowd_probability_up=0.54,
-        crowd_available=True,
-        binance_probability_up=0.48,
-        binance_available=True,
+def make_round(epoch: int, winner: str | None = None):
+    lock = 500.0
+    close = None if winner is None else (501.0 if winner == 'UP' else 499.0)
+    return RoundData(
+        epoch=epoch,start_timestamp=0,lock_timestamp=100,close_timestamp=400,
+        lock_price=lock,close_price=close,lock_oracle_id=1,close_oracle_id=2,
+        total_amount_bnb=1.0,bull_amount_bnb=0.5,bear_amount_bnb=0.5,
+        reward_base_bnb=1.0,reward_amount_bnb=0.97,oracle_called=winner is not None,
     )
-    assert result["signal"] == "UP"
-    assert result["selection_reason"] == "EV_REVERSAL_BLOCKED_PROBABILITY_FALLBACK"
-    assert result["trade_executed"] is False
-    assert result["stake"] == 0.0
-    assert result["no_trade_reason"] == "EV_NOT_ABOVE_MINIMUM"
 
 
-def test_strong_ev_reversal_requires_ev_and_agreement_and_can_pass():
-    result = select_side_and_stake(
-        probability_up=0.55,
-        coeff_up=1.35,
-        coeff_down=3.20,  # DOWN EV 44%
-        agreement_up=0.65,  # DOWN agreement 35%
-        state={"trades_count": 500, "bank": 500},
-        payout_ready_up=True,
-        payout_ready_down=True,
-    )
-    assert result["signal"] == "DOWN"
-    assert result["selection_reason"] == "BEST_CORRECTED_EV"
-
-
-def test_strong_ev_reversal_with_low_agreement_is_blocked():
-    result = select_side_and_stake(
-        probability_up=0.55,
-        coeff_up=1.35,
-        coeff_down=3.20,
-        agreement_up=0.80,  # DOWN agreement only 20%
-        state={"trades_count": 500, "bank": 500},
-        payout_ready_up=True,
-        payout_ready_down=True,
-    )
-    assert result["signal"] == "UP"
-    assert result["selection_reason"] == "EV_REVERSAL_BLOCKED_PROBABILITY_FALLBACK"
-
-
-def test_weak_ev_uses_crowd_binance_consensus_when_override_enabled():
-    old = _set_setting("consensus_override_enabled", True)
-    try:
-        result = select_side_and_stake(
-            probability_up=0.54,
-            coeff_up=1.50,
-            coeff_down=1.80,  # selected DOWN EV is below MIN_TRADE_EV=-0.10
-            agreement_up=0.60,
-            state={"trades_count": 50, "bank": 500},
-            payout_ready_up=True,
-            payout_ready_down=True,
-            crowd_probability_up=0.47,
-            crowd_available=True,
-            binance_probability_up=0.48,
-            binance_available=True,
-        )
-    finally:
-        object.__setattr__(settings, "consensus_override_enabled", old)
-    assert result["signal"] == "DOWN"
-    assert result["crowd_binance_consensus"] == "DOWN"
-    assert result["selection_reason"] == "WEAK_EV_CROWD_BINANCE_FALLBACK"
-    assert result["selected_expected_coeff"] == 1.80
-    assert result["crowd_binance_override"] is True
-    assert result["trade_rule"] == "CROWD_BINANCE_OVERRIDE"
-    assert result["trade_executed"] is True
-    assert result["stake"] == 10.0
-
-
-def test_consensus_override_does_not_bypass_minimum_coefficient():
-    old = _set_setting("consensus_override_enabled", True)
-    try:
-        result = select_side_and_stake(
-            probability_up=0.54,
-            coeff_up=1.50,
-            coeff_down=1.39,
-            agreement_up=0.60,
-            state={"trades_count": 50, "bank": 500},
-            payout_ready_up=True,
-            payout_ready_down=True,
-            crowd_probability_up=0.47,
-            crowd_available=True,
-            binance_probability_up=0.48,
-            binance_available=True,
-        )
-    finally:
-        object.__setattr__(settings, "consensus_override_enabled", old)
-    assert result["selection_reason"] == "WEAK_EV_CROWD_BINANCE_FALLBACK"
-    assert result["selected_expected_coeff"] == 1.39
-    assert result["crowd_binance_override"] is False
-    assert result["trade_executed"] is False
-    assert result["no_trade_reason"] == "EV_NOT_ABOVE_MINIMUM"
-
-
-def test_consensus_override_does_not_bypass_payout_readiness():
-    old = _set_setting("consensus_override_enabled", True)
-    try:
-        result = select_side_and_stake(
-            probability_up=0.54,
-            coeff_up=1.50,
-            coeff_down=1.80,
-            agreement_up=0.60,
-            state={"trades_count": 50, "bank": 500},
-            payout_ready_up=True,
-            payout_ready_down=False,
-            crowd_probability_up=0.47,
-            crowd_available=True,
-            binance_probability_up=0.48,
-            binance_available=True,
-        )
-    finally:
-        object.__setattr__(settings, "consensus_override_enabled", old)
-    assert result["consensus_override_eligible"] is True
-    assert result["crowd_binance_override"] is False
-    assert result["trade_executed"] is False
-    assert result["no_trade_reason"] == "PAYOUT_BUCKET_NOT_READY"
-
-
-def test_probability_fallback_never_uses_consensus_override():
-    result = select_side_and_stake(
-        probability_up=0.54,
-        coeff_up=1.50,
-        coeff_down=1.80,
-        agreement_up=0.60,
-        state={"trades_count": 50, "bank": 500},
-        payout_ready_up=True,
-        payout_ready_down=True,
-        crowd_probability_up=0.47,
-        crowd_available=True,
-        binance_probability_up=0.53,
-        binance_available=True,
-    )
-    assert result["selection_reason"] == "NEGATIVE_EV_PROBABILITY_FALLBACK"
-    assert result["consensus_override_eligible"] is False
-    assert result["crowd_binance_override"] is False
-    assert result["negative_fallback_blocked"] is True
-    assert result["trade_executed"] is False
-    assert result["no_trade_reason"] == "NEGATIVE_FALLBACK_DISABLED"
-
-
-def test_negative_fallback_is_blocked_even_when_general_ev_filter_passes():
-    result = select_side_and_stake(
-        probability_up=0.54,
-        coeff_up=1.70,  # UP selected EV = -0.082, above MIN_TRADE_EV=-0.10
-        coeff_down=1.70,
-        agreement_up=0.60,
-        state={"trades_count": 50, "bank": 500},
-        payout_ready_up=True,
-        payout_ready_down=True,
-        crowd_probability_up=0.47,
-        crowd_available=True,
-        binance_probability_up=0.53,
-        binance_available=True,
-    )
-    assert result["selection_reason"] == "NEGATIVE_EV_PROBABILITY_FALLBACK"
-    assert result["normal_ev_pass"] is True
-    assert result["negative_fallback_enabled"] is False
-    assert result["negative_fallback_blocked"] is True
-    assert result["trade_executed"] is False
-    assert result["stake"] == 0.0
-    assert result["no_trade_reason"] == "NEGATIVE_FALLBACK_DISABLED"
-    assert result["trade_rule"] == "NO_TRADE"
-
-
-def test_negative_fallback_can_be_reenabled_by_variable():
-    old = _set_setting("negative_fallback_enabled", True)
-    try:
-        result = select_side_and_stake(
-            probability_up=0.54,
-            coeff_up=1.70,
-            coeff_down=1.70,
-            agreement_up=0.60,
-            state={"trades_count": 50, "bank": 500},
-            payout_ready_up=True,
-            payout_ready_down=True,
-            crowd_probability_up=0.47,
-            crowd_available=True,
-            binance_probability_up=0.53,
-            binance_available=True,
-        )
-    finally:
-        object.__setattr__(settings, "negative_fallback_enabled", old)
-    assert result["selection_reason"] == "NEGATIVE_EV_PROBABILITY_FALLBACK"
-    assert result["normal_ev_pass"] is True
-    assert result["negative_fallback_blocked"] is False
-    assert result["trade_executed"] is True
-    assert result["no_trade_reason"] is None
-
-
-def test_weak_ev_without_consensus_uses_probability():
-    result = select_side_and_stake(
-        probability_up=0.54,
-        coeff_up=1.90,
-        coeff_down=2.20,
-        agreement_up=0.60,
-        state={"trades_count": 50, "bank": 500},
-        payout_ready_up=True,
-        payout_ready_down=True,
-        crowd_probability_up=0.47,
-        crowd_available=True,
-        binance_probability_up=0.53,
-        binance_available=True,
-    )
-    assert result["signal"] == "UP"
-    assert result["selection_reason"] == "WEAK_EV_PROBABILITY_FALLBACK"
-    assert result["trade_executed"] is True
-    assert result["stake"] == 10.0
-
-
-def test_bucket_priors_are_conservative_for_large_coefficients():
-    calibration = payout_calibration([])
-    up = calibration_for_raw(calibration, "up", 3.55)
-    down = calibration_for_raw(calibration, "down", 3.55)
-    assert up["name"] == ">= 3.00"
-    assert down["name"] == ">= 3.00"
-    assert up["correction"] == 0.60
-    assert down["correction"] == 0.70
-    assert abs(apply_payout_correction(3.55, up["correction"]) - 2.13) < 1e-12
-    assert abs(apply_payout_correction(3.55, down["correction"]) - 2.485) < 1e-12
-
-
-def test_bucket_calibration_does_not_mix_small_and_large_coefficients():
-    rows = []
-    for i in range(20):
-        rows.append({
-            "raw_expected_coeff_up": 1.40,
-            "raw_expected_coeff_down": 1.40,
-            "final_coeff_up": 1.33,
-            "final_coeff_down": 1.33,
+def test_forecast_returns_valid_signal():
+    history=[]
+    for i in range(40):
+        history.append({
+            'epoch': i,
+            'actual_winner': 'UP' if i % 2 == 0 else 'DOWN',
+            'winner_coeff_net': 1.9,
         })
-        rows.append({
-            "raw_expected_coeff_up": 3.50,
-            "raw_expected_coeff_down": 3.50,
-            "final_coeff_up": 1.925 + (i % 2) * 0.01,
-            "final_coeff_down": 2.275 + (i % 2) * 0.01,
-        })
-    calibration = payout_calibration(rows)
-    low_up = calibration_for_raw(calibration, "up", 1.40)
-    high_up = calibration_for_raw(calibration, "up", 3.50)
-    high_down = calibration_for_raw(calibration, "down", 3.50)
-    assert low_up["ready"] is True
-    assert high_up["ready"] is True
-    assert high_up["correction"] <= 0.60
-    assert high_down["correction"] <= 0.70
-    assert low_up["correction"] > high_up["correction"]
-
-
-def test_variable_stakes_are_disabled_by_default():
-    result = select_side_and_stake(
-        probability_up=0.62,
-        coeff_up=2.50,
-        coeff_down=1.40,
-        agreement_up=0.90,
-        state={"trades_count": 1000, "bank": 500},
-        payout_ready_up=True,
-        payout_ready_down=True,
+    live=make_round(99)
+    betting=make_round(100)
+    snapshot=MarketSnapshot(
+        current_epoch=100,betting_epoch=100,live_epoch=99,chain_timestamp=60,
+        seconds_to_lock=40,decision_window=True,safe_to_decide=True,
+        chainlink_price=500.5,oracle_round_id=1,oracle_updated_at=59,
+        oracle_age_seconds=1,live_round=live,betting_round=betting,
+        live_move_signed=0.5,live_move_points=0.5,current_direction='UP',
+        current_gross_coeff_up=2.0,current_gross_coeff_down=2.0,
+        current_net_coeff_up=1.94,current_net_coeff_down=1.94,
+        betting_bull_share_pct=50.0,betting_bear_share_pct=50.0,rpc_status={},
     )
-    assert result["selected_ev"] >= 0.50
-    assert result["stake"] == 10.0
-    assert result["variable_stake_ready"] is False
-
-
-def test_positive_ev_trade_is_executed():
-    result = select_side_and_stake(
-        probability_up=0.54,
-        coeff_up=1.95,
-        coeff_down=1.80,
-        agreement_up=0.65,
-        state={"trades_count": 10, "bank": 500},
-        payout_ready_up=True,
-        payout_ready_down=True,
-    )
-    assert result["selected_ev"] > 0
-    assert result["trade_executed"] is True
-    assert result["stake"] == 10.0
-    assert result["no_trade_reason"] is None
-
-
-def test_positive_ev_waits_for_payout_bucket_when_required():
-    result = select_side_and_stake(
-        probability_up=0.54,
-        coeff_up=1.95,
-        coeff_down=1.80,
-        agreement_up=0.65,
-        state={"trades_count": 10, "bank": 500},
-        payout_ready_up=False,
-        payout_ready_down=False,
-    )
-    assert result["selected_ev"] > 0
-    assert result["trade_executed"] is False
-    assert result["stake"] == 0.0
-    assert result["no_trade_reason"] == "PAYOUT_BUCKET_NOT_READY"
+    with patch('app.ensemble.db.snapshots_for_epoch', return_value=[]), \
+         patch('app.ensemble.db.recent_rounds', return_value=history), \
+         patch('app.ensemble.db.payout_ratios', return_value=[0.9] * 20), \
+         patch('app.ensemble.binance_from_env') as b:
+        b.return_value.snapshot.return_value={
+            'available': True, 'probability_up': 0.52, 'price': 500.5
+        }
+        result=forecast(snapshot)
+    assert result.signal in {'UP','DOWN'}
+    assert 0.0 < result.probability_up < 1.0
+    assert result.source_key in {'EV_PRIMARY','CROWD_BINANCE_FALLBACK','PROBABILITY_FALLBACK'}

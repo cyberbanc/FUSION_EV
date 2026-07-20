@@ -1,48 +1,72 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 from contextlib import asynccontextmanager
-from typing import Optional
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.encoders import jsonable_encoder
 
-from . import __version__, db
-from .config import settings
-from .ensemble import payout_calibration
+from . import db
+from .config import SETTINGS
 from .pancake_client import from_env
-from .worker import create_decision, loop, settle_pending, status as worker_status, sync_recent, tick
+from .shadow import summarize
+from .worker import bootstrap_rounds, loop, status as worker_status, tick
 
 _STOP: Optional[asyncio.Event] = None
 _TASK: Optional[asyncio.Task] = None
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(app: FastAPI):
     global _STOP, _TASK
-    if not db.enabled():
-        raise RuntimeError("DATABASE_URL is required for M9 FUSION EV")
     db.init_db()
-    if settings.worker_enabled:
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(bootstrap_rounds, from_env()), timeout=45
+        )
+    except Exception:
+        pass
+    if SETTINGS.worker_enabled:
         _STOP = asyncio.Event()
         _TASK = asyncio.create_task(loop(_STOP))
     yield
-    if _STOP is not None:
+    if _STOP:
         _STOP.set()
-    if _TASK is not None:
+    if _TASK:
         try:
-            await asyncio.wait_for(_TASK, timeout=5)
+            await asyncio.wait_for(_TASK, timeout=8)
         except Exception:
             _TASK.cancel()
 
 
-app = FastAPI(title="M9 FUSION EV", version=__version__, lifespan=lifespan)
+app = FastAPI(
+    title="M9 Fusion EV Adaptive EV Shadow Bot",
+    version=SETTINGS.version,
+    lifespan=lifespan,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -52,31 +76,19 @@ def root():
     return {
         "ok": True,
         "service": "m9-fusion-ev-paper-bot",
-        "version": __version__,
+        "version": SETTINGS.version,
         "mode": "PAPER",
-        "strategy": "selective EV filter with negative probability fallback blocked",
-        "decision_lock": f"T-{settings.prelock_seconds}",
-        "stake_mode": [settings.base_stake] if not settings.variable_stake_enabled else [settings.base_stake, settings.medium_stake, settings.high_stake],
-        "variable_stake_enabled": settings.variable_stake_enabled,
-        "trade_filter_enabled": settings.trade_filter_enabled,
-        "min_trade_ev": settings.min_trade_ev,
-        "negative_fallback_enabled": settings.negative_fallback_enabled,
-        "require_payout_bucket_ready": settings.require_payout_bucket_ready,
-        "consensus_override_enabled": settings.consensus_override_enabled,
-        "consensus_override_min_coeff": settings.consensus_override_min_coeff,
-        "consensus_override_stake_usd": settings.consensus_override_stake_usd,
-        "real_transactions": False,
-        "urls": {
-            "health": "/health",
-            "signal": "/signal",
-            "status": "/status?limit=30",
-            "full_history_json": "/status?history=all&limit=100000",
-            "history": "/history?limit=1000",
-            "csv": "/history/export.csv",
-            "model_performance": "/model/performance",
-            "payout_calibration": "/payout/calibration",
-            "strategy_performance": "/strategy/performance",
+        "strategy": "adaptive EV stake $5/$10/$15 + shadow quality + loss cooldown",
+        "stake_mode": "adaptive_ev_tiers",
+        "stake_rules": {
+            "ev_negative": SETTINGS.stake_low,
+            "ev_zero_to_0_05": SETTINGS.stake_mid,
+            "ev_ge_0_05": SETTINGS.stake_high,
         },
+        "signal_url": "/signal",
+        "status_url": "/status?history=recent&limit=30",
+        "history_csv_url": "/history/export.csv",
+        "shadow_performance_url": "/shadow/performance",
     }
 
 
@@ -86,242 +98,179 @@ def health():
     return {
         "ok": True,
         "service": "m9-fusion-ev-paper-bot",
-        "version": __version__,
-        "database_enabled": db.enabled(),
-        "pancake_connected": client.is_connected(),
-        "rpc": client.rpc_status(),
-        "worker_enabled": settings.worker_enabled,
-        "variable_stake_enabled": settings.variable_stake_enabled,
-        "strong_ev_threshold": settings.strong_ev_threshold,
-        "ev_reversal_min_ev": settings.ev_reversal_min_ev,
-        "ev_reversal_min_agreement": settings.ev_reversal_min_agreement,
-        "trade_filter_enabled": settings.trade_filter_enabled,
-        "min_trade_ev": settings.min_trade_ev,
-        "negative_fallback_enabled": settings.negative_fallback_enabled,
-        "require_payout_bucket_ready": settings.require_payout_bucket_ready,
-        "consensus_override_enabled": settings.consensus_override_enabled,
-        "consensus_override_min_coeff": settings.consensus_override_min_coeff,
-        "consensus_override_stake_usd": settings.consensus_override_stake_usd,
+        "version": SETTINGS.version,
+        "connected": client.is_connected(),
+        "database_connected": db.ping(),
         "worker": worker_status(),
-        "data_sources": [
-            "PancakeSwap Prediction rounds and pools",
-            "Chainlink latestRoundData from Prediction oracle",
-            "Binance public market-data REST when available",
-            "Bayesian M9 diagnostics (zero voting weight by default)",
-            "pattern diagnostics (zero voting weight by default)",
-        ],
+        "tables": db.table_names(),
+        "trade_filter_enabled": SETTINGS.trade_filter_enabled,
+        "shadow_filter_enabled": SETTINGS.shadow_filter_enabled,
+        "min_trade_ev": SETTINGS.min_trade_ev,
+        "stake_mode": "adaptive_ev_tiers",
+        "stake_rules": {
+            "ev_negative": SETTINGS.stake_low,
+            "ev_zero_to_0_05": SETTINGS.stake_mid,
+            "ev_ge_0_05": SETTINGS.stake_high,
+        },
     }
 
 
 @app.get("/signal")
-def signal(auto_lock: bool = True):
-    client = from_env()
-    settle_pending(client)
-    snapshot = client.snapshot()
-    decision = db.get_decision(snapshot.betting_epoch)
-    if decision is None and auto_lock and snapshot.decision_window:
-        decision = create_decision(snapshot)
-    trade_executed = bool(decision.get("trade_executed", True)) if decision else False
-    public_signal = (
-        decision.get("signal") if decision and trade_executed else ("NO_TRADE" if decision else None)
-    )
-    public_status = (
-        "WAIT" if decision is None else ("LOCKED" if trade_executed else "NO_TRADE")
-    )
-    features = (decision.get("features_json") or {}) if decision else {}
+def signal():
+    result = tick()
+    epoch = result.get("betting_epoch")
+    decision = db.get_decision(int(epoch)) if epoch is not None else None
+    if decision:
+        return _json_safe(
+            {
+                "ok": True,
+                "status": "LOCKED",
+                "decision_locked": True,
+                **decision,
+                "worker_tick": result,
+            }
+        )
     return {
         "ok": True,
-        "status": public_status,
-        "decision_locked": bool(decision),
-        "trade_executed": trade_executed if decision else None,
-        "no_trade_reason": decision.get("no_trade_reason") if decision else None,
-        "betting_epoch": snapshot.betting_epoch,
-        "live_epoch": snapshot.live_epoch,
-        "seconds_to_lock": snapshot.seconds_to_lock,
-        "decision_window": snapshot.decision_window,
-        "signal": public_signal,
-        "analysis_signal": decision.get("signal") if decision else None,
-        "stake": decision.get("stake") if decision else 0.0,
-        "probability_up": decision.get("probability_up") if decision else None,
-        "probability_down": decision.get("probability_down") if decision else None,
-        "raw_expected_coeff_up": decision.get("raw_expected_coeff_up") if decision else None,
-        "raw_expected_coeff_down": decision.get("raw_expected_coeff_down") if decision else None,
-        "payout_correction_up": decision.get("payout_correction_up") if decision else None,
-        "payout_correction_down": decision.get("payout_correction_down") if decision else None,
-        "payout_bucket_up": decision.get("payout_bucket_up") if decision else None,
-        "payout_bucket_down": decision.get("payout_bucket_down") if decision else None,
-        "expected_coeff_up": decision.get("expected_coeff_up") if decision else snapshot.current_net_coeff_up,
-        "expected_coeff_down": decision.get("expected_coeff_down") if decision else snapshot.current_net_coeff_down,
-        "ev_up": decision.get("ev_up") if decision else None,
-        "ev_down": decision.get("ev_down") if decision else None,
-        "selected_ev": decision.get("selected_ev") if decision else None,
-        "agreement": decision.get("agreement") if decision else None,
-        "selection_reason": features.get("selection_reason"),
-        "crowd_binance_consensus": features.get("crowd_binance_consensus"),
-        "selected_expected_coeff": features.get("selected_expected_coeff"),
-        "normal_ev_pass": features.get("normal_ev_pass"),
-        "negative_fallback_enabled": features.get("negative_fallback_enabled"),
-        "negative_fallback_blocked": features.get("negative_fallback_blocked"),
-        "consensus_override_eligible": features.get("consensus_override_eligible"),
-        "crowd_binance_override": features.get("crowd_binance_override"),
-        "trade_rule": features.get("trade_rule"),
-        "decision_quality": decision.get("decision_quality") if decision else "WAIT_T_MINUS_40",
-        "components": decision.get("components_json") if decision else None,
-        "weights": decision.get("weights_json") if decision else None,
-        "snapshot": snapshot.to_dict(),
-        "paper_state": db.get_state(),
-        "real_transactions": False,
+        "status": "WAIT",
+        "decision_locked": False,
+        "betting_epoch": epoch,
+        "seconds_to_lock": result.get("seconds_to_lock"),
+        "worker_tick": result,
     }
 
 
 @app.get("/status")
 def status(
-    response: Response,
-    history: str = Query("recent", description="recent, all or none"),
+    history: str = Query("recent", pattern="^(recent|all|none)$"),
     limit: int = Query(30, ge=1),
     offset: int = Query(0, ge=0),
-    ascending: bool = False,
 ):
-    mode = history.strip().lower()
-    if mode not in {"recent", "all", "none"}:
-        raise HTTPException(
-            status_code=422,
-            detail="history must be one of: recent, all, none",
-        )
-
-    total = db.decision_count()
-    safe_limit = min(int(limit), settings.history_api_max_limit)
-    rows = [] if mode == "none" else db.decision_history(
-        limit=safe_limit,
-        offset=offset,
-        ascending=ascending,
+    safe_limit = min(limit, SETTINGS.history_api_max_limit)
+    rows = [] if history == "none" else db.history(safe_limit, offset)
+    count = db.history_count()
+    state = db.get_state()
+    return _json_safe(
+        {
+            "ok": True,
+            "service": "m9-fusion-ev-paper-bot",
+            "version": SETTINGS.version,
+            "paper_state": state,
+            "worker": worker_status(),
+            "history_storage": "postgresql_no_automatic_deletion",
+            "history_mode": history,
+            "history_count": count,
+            "history_limit": safe_limit,
+            "history_offset": offset,
+            "history_returned": len(rows),
+            "history_has_more": offset + len(rows) < count,
+            "history_next_offset": offset + len(rows) if offset + len(rows) < count else None,
+            "history_download_json": "/status?history=all&limit=100000",
+            "history_download_csv": "/history/export.csv",
+            "history": rows,
+        }
     )
-
-    # Opening /status?history=all&limit=100000 directly in a browser downloads
-    # the complete JSON response as a file. Fetch/XHR clients can still parse it normally.
-    if mode == "all":
-        response.headers["Content-Disposition"] = (
-            'attachment; filename="m9_fusion_ev_history.json"'
-        )
-        response.headers["X-History-Mode"] = "all"
-
-    returned = len(rows)
-    return {
-        "ok": True,
-        "service": "m9-fusion-ev-paper-bot",
-        "version": __version__,
-        "paper_state": db.get_state(),
-        "worker": worker_status(),
-        "history_storage": "postgresql_no_automatic_deletion",
-        "history_mode": mode,
-        "history_count": total,
-        "history_limit": safe_limit,
-        "history_offset": offset,
-        "history_returned": returned,
-        "history_has_more": offset + returned < total,
-        "history_next_offset": offset + returned if offset + returned < total else None,
-        "history_download_json": "/status?history=all&limit=100000",
-        "history_download_csv": "/history/export.csv",
-        "history": rows,
-    }
 
 
 @app.get("/history")
 def history(
     limit: int = Query(1000, ge=1),
     offset: int = Query(0, ge=0),
-    ascending: bool = False,
+    settled_only: bool = False,
+    trades_only: bool = False,
 ):
-    return {
-        "ok": True,
-        "count": db.decision_count(),
-        "limit": min(limit, settings.history_api_max_limit),
-        "offset": offset,
-        "history": db.decision_history(limit, offset, ascending),
-    }
-
-
-@app.get("/history/count")
-def history_count():
-    return {"ok": True, "count": db.decision_count()}
-
-
-@app.get("/history/export.csv")
-def history_csv():
-    return Response(
-        content=db.export_csv(),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=m9_fusion_ev_history.csv"},
+    rows = db.history(limit, offset, settled_only=settled_only, trades_only=trades_only)
+    return _json_safe(
+        {
+            "ok": True,
+            "count": db.history_count(settled_only=settled_only, trades_only=trades_only),
+            "limit": min(limit, SETTINGS.history_api_max_limit),
+            "offset": offset,
+            "history": rows,
+        }
     )
 
 
-@app.get("/rounds")
-def rounds(limit: int = Query(30, ge=1)):
-    return {"ok": True, "rounds": db.recent_rounds(limit)}
+@app.get("/history/export.csv")
+def history_export():
+    rows = db.history(SETTINGS.history_api_max_limit, 0)
+    output = io.StringIO()
+    if not rows:
+        output.write("betting_epoch\n")
+    else:
+        columns = list(rows[0].keys())
+        writer = csv.DictWriter(output, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: _json_safe(v) for k, v in row.items()})
+    return Response(
+        output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=m9_fusion_ev_history_v1_3_6.csv"},
+    )
 
 
-@app.get("/snapshots/{epoch}")
-def snapshots(epoch: int):
-    return {"ok": True, "epoch": epoch, "snapshots": db.load_snapshots(epoch)}
-
-
-@app.get("/payout/calibration")
-def payout_calibration_status(limit: int = Query(500, ge=1, le=5000)):
-    rows = db.payout_calibration_history(limit)
+def _performance(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    trades = [r for r in rows if r.get("trade_executed") and r.get("outcome") in {"WIN", "LOSS"}]
+    wins = sum(1 for r in trades if r.get("outcome") == "WIN")
+    losses = sum(1 for r in trades if r.get("outcome") == "LOSS")
+    pnl = sum(float(r.get("pnl") or 0) for r in trades)
+    gross_profit = sum(float(r.get("pnl") or 0) for r in trades if float(r.get("pnl") or 0) > 0)
+    gross_loss = -sum(float(r.get("pnl") or 0) for r in trades if float(r.get("pnl") or 0) < 0)
     return {
-        "ok": True,
-        "version": __version__,
-        "calibration": payout_calibration(rows),
-        "history_rows": len(rows),
-    }
-
-
-@app.get("/strategy/performance")
-def strategy_performance():
-    return {
-        "ok": True,
-        "current_version": __version__,
-        "versions": db.strategy_performance(),
+        "trades": len(trades),
+        "wins": wins,
+        "losses": losses,
+        "win_rate": wins / len(trades) if trades else 0,
+        "pnl": pnl,
+        "profit_factor": gross_profit / gross_loss if gross_loss else None,
     }
 
 
 @app.get("/model/performance")
-def model_performance(limit: int = Query(300, ge=1, le=5000)):
-    rows = db.settled_component_history(limit)
-    result: dict[str, dict[str, float]] = {}
+def model_performance(limit: int = Query(5000, ge=1)):
+    rows = db.history(min(limit, SETTINGS.history_api_max_limit), 0, settled_only=True)
+    overall = _performance(rows)
+    by_version: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        actual = 1.0 if row.get("final_winner") == "UP" else 0.0
-        for component in row.get("components_json") or []:
-            if not component.get("available"):
-                continue
-            name = str(component.get("name"))
-            p = float(component.get("probability_up", 0.5))
-            item = result.setdefault(name, {"count": 0.0, "brier_sum": 0.0, "correct": 0.0})
-            item["count"] += 1
-            item["brier_sum"] += (p - actual) ** 2
-            item["correct"] += 1 if (p >= 0.5) == (actual == 1.0) else 0
-    output = {}
-    for name, item in result.items():
-        count = item["count"] or 1.0
-        output[name] = {
-            "count": int(item["count"]),
-            "brier_score": item["brier_sum"] / count,
-            "direction_accuracy": item["correct"] / count,
+        by_version.setdefault(str(row.get("strategy_version") or "unknown"), []).append(row)
+    return _json_safe(
+        {
+            "ok": True,
+            "overall": overall,
+            "by_version": {key: _performance(value) for key, value in by_version.items()},
         }
-    return {"ok": True, "lookback": len(rows), "models": output}
+    )
 
 
-@app.post("/admin/tick")
-def admin_tick():
-    try:
-        return {"ok": True, "tick": tick()}
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}")
-
-
-@app.post("/admin/sync")
-def admin_sync():
-    try:
-        return {"ok": True, "sync": sync_recent()}
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}")
+@app.get("/shadow/performance")
+def shadow_performance():
+    source_keys = ["EV_PRIMARY", "CROWD_BINANCE_FALLBACK", "PROBABILITY_FALLBACK"]
+    result: dict[str, Any] = {}
+    for source in source_keys:
+        source_rows = db.shadow_rows(source, None, SETTINGS.shadow_source_lookback)
+        result[source] = {
+            "overall": summarize(source_rows).to_dict(),
+            "UP": summarize(db.shadow_rows(source, "UP", SETTINGS.shadow_side_lookback)).to_dict(),
+            "DOWN": summarize(db.shadow_rows(source, "DOWN", SETTINGS.shadow_side_lookback)).to_dict(),
+        }
+    return {
+        "ok": True,
+        "version": SETTINGS.version,
+        "filter_settings": {
+            "source_lookback": SETTINGS.shadow_source_lookback,
+            "side_lookback": SETTINGS.shadow_side_lookback,
+            "min_samples": SETTINGS.shadow_min_samples,
+            "min_profit_factor": SETTINGS.shadow_min_profit_factor,
+            "min_win_rate": SETTINGS.shadow_min_win_rate,
+            "recent_window": SETTINGS.shadow_recent_window,
+            "recent_min_pnl": SETTINGS.shadow_recent_min_pnl,
+            "quality_window": SETTINGS.quality_window,
+            "quality_min_samples": SETTINGS.quality_min_samples,
+            "quality_min_win_rate": SETTINGS.quality_min_win_rate,
+            "quality_min_profit_factor": SETTINGS.quality_min_profit_factor,
+            "cooldown_loss_streak_trigger": SETTINGS.cooldown_loss_streak_trigger,
+            "cooldown_rounds": SETTINGS.cooldown_rounds,
+        },
+        "sources": result,
+    }

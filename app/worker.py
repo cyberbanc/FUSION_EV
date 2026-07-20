@@ -1,151 +1,357 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
-from typing import Any, Optional
+from typing import Any
 
-from . import __version__, db
-from .binance_client import BinanceClient
-from .config import settings
-from .ensemble import build_decision
-from .pancake_client import from_env
+from . import db
+from .config import SETTINGS
+from .ensemble import forecast
+from .pancake_client import PancakeClient, from_env
+from .shadow import evaluate as evaluate_shadow
+from .risk import stake_for_ev
 
-_LAST: dict[str, Any] = {"ok": None, "message": "not_started"}
-_LAST_SYNC = 0.0
-_BOOTSTRAPPED = False
-
-
-def status() -> dict[str, Any]:
-    return dict(_LAST)
+_LAST_TICK: dict[str, Any] = {}
+_LAST_TICK_LOCK = threading.Lock()
+_TICK_LOCK = threading.Lock()
+_LAST_SYNC_AT = 0.0
 
 
-def bootstrap() -> dict[str, Any]:
-    global _BOOTSTRAPPED
-    if _BOOTSTRAPPED:
-        return {"bootstrapped": True, "skipped": True}
-    client = from_env()
-    rows = client.closed_rounds(settings.bootstrap_lookback)
-    saved = db.upsert_rounds(rows, source="bootstrap")
-    _BOOTSTRAPPED = True
-    return {"bootstrapped": True, "saved": saved, "lookback": settings.bootstrap_lookback}
+def _round_record(round_data) -> dict[str, Any]:
+    winner = round_data.actual_winner
+    gross = round_data.coefficient_gross(winner) if winner in {"UP", "DOWN"} else None
+    return {
+        "epoch": round_data.epoch,
+        "start_timestamp": round_data.start_timestamp,
+        "lock_timestamp": round_data.lock_timestamp,
+        "close_timestamp": round_data.close_timestamp,
+        "lock_price": round_data.lock_price,
+        "close_price": round_data.close_price,
+        "lock_oracle_id": round_data.lock_oracle_id,
+        "close_oracle_id": round_data.close_oracle_id,
+        "total_amount_bnb": round_data.total_amount_bnb,
+        "bull_amount_bnb": round_data.bull_amount_bnb,
+        "bear_amount_bnb": round_data.bear_amount_bnb,
+        "reward_base_bnb": round_data.reward_base_bnb,
+        "reward_amount_bnb": round_data.reward_amount_bnb,
+        "oracle_called": round_data.oracle_called,
+        "actual_winner": winner,
+        "winner_coeff_gross": gross,
+        "winner_coeff_net": gross * (1 - SETTINGS.treasury_fee) if gross else None,
+    }
 
 
-def sync_recent(client=None) -> dict[str, Any]:
-    client = client or from_env()
+def bootstrap_rounds(client: PancakeClient) -> dict[str, Any]:
     current = client.current_epoch()
-    rows = []
-    start = max(1, current - settings.sync_recent_lookback)
-    for epoch in range(start, current - 1):
+    saved = 0
+    start = max(1, current - SETTINGS.bootstrap_lookback)
+    for epoch in range(start, max(start, current - 1)):
         try:
-            row = client.round(epoch)
+            round_data = client.round(epoch)
+            if round_data.oracle_called:
+                db.upsert_round(_round_record(round_data))
+                saved += 1
         except Exception:
             continue
-        if row.oracle_called and row.actual_winner in {"UP", "DOWN", "DRAW"}:
-            rows.append(row)
-    saved = db.upsert_rounds(rows, source="continuous_sync") if rows else 0
     return {"saved": saved, "current_epoch": current}
 
 
-def settle_pending(client=None) -> int:
-    client = client or from_env()
-    settled = 0
-    for decision in db.unsettled_decisions(80):
-        epoch = int(decision["betting_epoch"])
+def sync_recent_closed(client: PancakeClient, current_epoch: int) -> dict[str, Any] | None:
+    global _LAST_SYNC_AT
+    now = time.time()
+    if now - _LAST_SYNC_AT < SETTINGS.sync_closed_seconds:
+        return None
+    _LAST_SYNC_AT = now
+    saved = 0
+    end = current_epoch - 2
+    start = max(1, end - SETTINGS.sync_recent_lookback + 1)
+    for epoch in range(start, end + 1):
         try:
-            row = client.round(epoch)
+            round_data = client.round(epoch)
+            if round_data.oracle_called:
+                db.upsert_round(_round_record(round_data))
+                saved += 1
         except Exception:
             continue
-        if not row.oracle_called or row.actual_winner not in {"UP", "DOWN", "DRAW"}:
+    return {"saved": saved, "from_epoch": start, "to_epoch": end}
+
+
+def settle_finished(client: PancakeClient, current_epoch: int | None = None) -> int:
+    current_epoch = current_epoch or client.current_epoch()
+    settled_count = 0
+    for decision in db.unsettled_decisions(limit=200):
+        epoch = int(decision["betting_epoch"])
+        if epoch > current_epoch - 2:
             continue
-        db.upsert_rounds([row], source="settlement")
-        if db.settle_decision_atomic(epoch, row):
-            settled += 1
-    return settled
+        try:
+            round_data = client.round(epoch)
+            if not round_data.oracle_called or round_data.actual_winner is None:
+                continue
+            db.upsert_round(_round_record(round_data))
+            winner = round_data.actual_winner
+            coeff_up_gross = round_data.coefficient_gross("UP")
+            coeff_down_gross = round_data.coefficient_gross("DOWN")
+            coeff_up = coeff_up_gross * (1 - SETTINGS.treasury_fee) if coeff_up_gross else None
+            coeff_down = coeff_down_gross * (1 - SETTINGS.treasury_fee) if coeff_down_gross else None
+            winner_gross = coeff_up_gross if winner == "UP" else coeff_down_gross if winner == "DOWN" else None
+            winner_net = coeff_up if winner == "UP" else coeff_down if winner == "DOWN" else None
+            signal = str(decision.get("signal") or "")
+            trade_executed = bool(decision.get("trade_executed"))
+            stake = float(decision.get("stake") or 0.0)
+            if winner == "DRAW":
+                outcome = "REFUND" if trade_executed else "SKIP"
+                pnl = 0.0
+                shadow_pnl = 0.0
+            elif signal == winner:
+                outcome = "WIN" if trade_executed else "SKIP"
+                selected_coeff = coeff_up if signal == "UP" else coeff_down
+                pnl = stake * ((selected_coeff or 1.0) - 1.0) if trade_executed else 0.0
+                shadow_pnl = SETTINGS.shadow_stake * ((selected_coeff or 1.0) - 1.0)
+            else:
+                outcome = "LOSS" if trade_executed else "SKIP"
+                pnl = -stake if trade_executed else 0.0
+                shadow_pnl = -SETTINGS.shadow_stake
+
+            probability = (
+                float(decision.get("probability_up") or 0.5)
+                if signal == "UP"
+                else float(decision.get("probability_down") or 0.5)
+            )
+            selected_final_coeff = coeff_up if signal == "UP" else coeff_down
+            actual_ev = probability * selected_final_coeff - 1.0 if selected_final_coeff else None
+            raw_expected = (
+                float(decision.get("raw_expected_coeff_up") or 0)
+                if signal == "UP"
+                else float(decision.get("raw_expected_coeff_down") or 0)
+            )
+            payout_ratio = selected_final_coeff / raw_expected if selected_final_coeff and raw_expected > 0 else None
+            move_points = (
+                abs(float(round_data.close_price) - float(round_data.lock_price))
+                if round_data.close_price is not None and round_data.lock_price is not None
+                else None
+            )
+            changed = db.settle_decision_atomic(
+                epoch,
+                final_winner=winner,
+                final_coeff_gross=winner_gross,
+                final_coeff_net=winner_net,
+                final_coeff_up=coeff_up,
+                final_coeff_down=coeff_down,
+                final_move_points=move_points,
+                outcome=outcome,
+                pnl=pnl,
+                shadow_pnl=shadow_pnl,
+                actual_ev_signal=actual_ev,
+                payout_ratio_signal=payout_ratio,
+            )
+            if changed:
+                settled_count += 1
+        except Exception:
+            continue
+    return settled_count
 
 
-def create_decision(snapshot, binance_data: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
+def create_locked_decision(snapshot) -> dict[str, Any]:
     existing = db.get_decision(snapshot.betting_epoch)
     if existing:
         return existing
-    if not snapshot.decision_window:
-        return None
-    state = db.get_state()
-    if binance_data is None:
-        binance_data = BinanceClient().snapshot()
-    db.save_snapshot(snapshot, binance_data)
-    same_epoch_snapshots = db.load_snapshots(snapshot.betting_epoch)
-    rounds = db.load_rounds(settings.m9_history_limit)
-    settled_history = db.settled_component_history(settings.adaptive_weight_lookback)
-    payout_history = db.payout_calibration_history(settings.payout_calibration_lookback)
-    model = build_decision(
-        snapshot=snapshot,
-        same_epoch_snapshots=same_epoch_snapshots,
-        rounds=rounds,
-        binance_data=binance_data,
-        state=state,
-        settled_history=settled_history,
-        payout_history=payout_history,
+
+    result = forecast(snapshot)
+    selected_ready = (
+        result.payout_bucket_ready_up if result.signal == "UP" else result.payout_bucket_ready_down
     )
-    data = {
-        "betting_epoch": snapshot.betting_epoch,
-        "live_epoch": snapshot.live_epoch,
-        "strategy_version": __version__,
-        "locked_at_chain_timestamp": snapshot.chain_timestamp,
-        "locked_at_seconds_to_lock": snapshot.seconds_to_lock,
-        # Kept as bank_before for backward API compatibility. Semantically
-        # this is the bank visible when the decision was created.
-        "bank_before": float(state.get("bank", settings.start_bank)),
-        "snapshot": snapshot.to_dict(),
-        **model,
-    }
-    db.insert_decision(data)
-    return db.get_decision(snapshot.betting_epoch)
+    shadow_allowed, shadow_reason, shadow_stats = evaluate_shadow(
+        result.source_key, result.signal, result.selected_ev
+    )
+
+    # Cooldown is consumed by the next newly created decision, regardless of
+    # whether the model would otherwise trade that round. This implements
+    # "three settled real losses -> skip one full decision round".
+    cooldown_applied = db.consume_cooldown_round()
+
+    allowed = True
+    no_trade_reason: str | None = None
+    if cooldown_applied:
+        allowed = False
+        no_trade_reason = "COOLDOWN_AFTER_3_REAL_LOSSES"
+    elif SETTINGS.require_payout_bucket_ready and not selected_ready:
+        allowed = False
+        no_trade_reason = "PAYOUT_BUCKET_NOT_READY"
+    elif SETTINGS.trade_filter_enabled and not shadow_allowed:
+        allowed = False
+        no_trade_reason = shadow_reason
+
+    stake_decision = stake_for_ev(result.selected_ev)
+    stake = stake_decision.stake if allowed else 0.0
+    stake_tier = stake_decision.tier if allowed else "NO_TRADE"
+    trade_executed = allowed
+    quality_prefix = "V1_3_6_TRADE" if trade_executed else "V1_3_6_NO_TRADE"
+    decision_quality = f"{quality_prefix}_{no_trade_reason or shadow_reason}_{result.selection_reason}"
+    state = db.get_state()
+    features = dict(result.features)
+    features.update(
+        {
+            "trade_executed": trade_executed,
+            "no_trade_reason": no_trade_reason,
+            "trade_rule": "ADAPTIVE_EV_TIER_SHADOW_ALLOWED" if trade_executed else "NO_TRADE",
+            "min_trade_ev": SETTINGS.min_trade_ev,
+            "shadow_filter_enabled": SETTINGS.shadow_filter_enabled,
+            "shadow_allowed": shadow_allowed,
+            "shadow_reason": shadow_reason,
+            "shadow_stats": shadow_stats,
+            "selected_payout_bucket_ready": selected_ready,
+            "stake_mode": "adaptive_ev_tiers",
+            "stake_tier": stake_tier,
+            "stake_rules": {
+                "negative_ev": SETTINGS.stake_low,
+                "nonnegative_below_high": SETTINGS.stake_mid,
+                "high_ev": SETTINGS.stake_high,
+                "mid_threshold": SETTINGS.stake_mid_ev,
+                "high_threshold": SETTINGS.stake_high_ev,
+            },
+            "cooldown_applied": cooldown_applied,
+            "cooldown_loss_streak_trigger": SETTINGS.cooldown_loss_streak_trigger,
+            "cooldown_rounds": SETTINGS.cooldown_rounds,
+        }
+    )
+    return db.insert_decision(
+        {
+            "betting_epoch": snapshot.betting_epoch,
+            "live_epoch": snapshot.live_epoch,
+            "locked_at_chain_timestamp": snapshot.chain_timestamp,
+            "locked_at_seconds_to_lock": snapshot.seconds_to_lock,
+            "signal": result.signal,
+            "probability_up": result.probability_up,
+            "probability_down": result.probability_down,
+            "expected_coeff_up": result.expected_coeff_up,
+            "expected_coeff_down": result.expected_coeff_down,
+            "ev_up": result.ev_up,
+            "ev_down": result.ev_down,
+            "selected_ev": result.selected_ev,
+            "agreement": result.agreement,
+            "decision_quality": decision_quality,
+            "stake": stake,
+            "bank_before": float(state.get("bank") or SETTINGS.start_bank),
+            "components_json": [x.to_dict() for x in result.components],
+            "weights_json": result.weights,
+            "features_json": features,
+            "snapshot_json": snapshot.to_dict(),
+            "raw_expected_coeff_up": result.raw_expected_coeff_up,
+            "raw_expected_coeff_down": result.raw_expected_coeff_down,
+            "payout_correction_up": result.payout_correction_up,
+            "payout_correction_down": result.payout_correction_down,
+            "strategy_version": SETTINGS.version,
+            "payout_bucket_up": result.payout_bucket_up,
+            "payout_bucket_down": result.payout_bucket_down,
+            "trade_executed": trade_executed,
+            "no_trade_reason": no_trade_reason,
+            "source_key": result.source_key,
+            "selection_reason": result.selection_reason,
+            "fib_line": None,
+            "fib_index": None,
+            "fib_step": None,
+            "shadow_allowed": shadow_allowed,
+            "shadow_reason": shadow_reason,
+            "shadow_stats_json": shadow_stats,
+            "stake_mode": "adaptive_ev_tiers",
+            "stake_tier": stake_tier,
+            "cooldown_applied": cooldown_applied,
+        }
+    )
 
 
 def tick() -> dict[str, Any]:
-    global _LAST, _LAST_SYNC
-    client = from_env()
-    if not _BOOTSTRAPPED:
-        bootstrap_result = bootstrap()
-    else:
-        bootstrap_result = None
-    settled = settle_pending(client)
-    now = time.time()
-    sync_result = None
-    if now - _LAST_SYNC >= settings.sync_closed_seconds:
-        sync_result = sync_recent(client)
-        _LAST_SYNC = now
-    snapshot = client.snapshot()
-    saved_snapshot = False
-    decision = db.get_decision(snapshot.betting_epoch)
-    if 0 < snapshot.seconds_to_lock <= settings.snapshot_start_seconds:
-        db.save_snapshot(snapshot)
-        saved_snapshot = True
-    if decision is None and snapshot.decision_window:
-        decision = create_decision(snapshot)
-    _LAST = {
-        "ok": True,
-        "message": "tick_complete",
-        "chain_timestamp": snapshot.chain_timestamp,
-        "betting_epoch": snapshot.betting_epoch,
-        "seconds_to_lock": snapshot.seconds_to_lock,
-        "snapshot_saved": saved_snapshot,
-        "decision_locked": bool(decision),
-        "trade_executed": (bool(decision.get("trade_executed", True)) if decision else None),
-        "decision_signal": (
-            decision.get("signal")
-            if decision and bool(decision.get("trade_executed", True))
-            else ("NO_TRADE" if decision else None)
-        ),
-        "analysis_signal": decision.get("signal") if decision else None,
-        "no_trade_reason": decision.get("no_trade_reason") if decision else None,
-        "settled_now": settled,
-        "bootstrap": bootstrap_result,
-        "sync": sync_result,
-        "rpc": snapshot.rpc_status,
-        "updated_at": int(time.time()),
+    # The background worker and a manual /signal request may call tick at the
+    # same time. Serializing the whole cycle prevents duplicate RPC work and
+    # overlapping settlement/snapshot operations. Database uniqueness remains
+    # the final safety layer.
+    with _TICK_LOCK:
+        started = time.time()
+        client = from_env()
+        snapshot = client.market_snapshot()
+        settled = settle_finished(client, snapshot.current_epoch)
+        sync = sync_recent_closed(client, snapshot.current_epoch)
+        snapshot_saved = False
+        if SETTINGS.prelock_seconds <= snapshot.seconds_to_lock <= SETTINGS.snapshot_start_seconds:
+            snapshot_saved = db.save_snapshot(
+                {
+                    **snapshot.to_dict(),
+                    "bull_amount_bnb": snapshot.betting_round.bull_amount_bnb,
+                    "bear_amount_bnb": snapshot.betting_round.bear_amount_bnb,
+                }
+            )
+        decision = db.get_decision(snapshot.betting_epoch)
+        created = False
+        if decision is None and snapshot.decision_window:
+            decision = create_locked_decision(snapshot)
+            created = True
+        result = {
+            "ok": True,
+            "message": "tick_complete",
+            "chain_timestamp": snapshot.chain_timestamp,
+            "current_epoch": snapshot.current_epoch,
+            "betting_epoch": snapshot.betting_epoch,
+            "live_epoch": snapshot.live_epoch,
+            "seconds_to_lock": snapshot.seconds_to_lock,
+            "decision_window": snapshot.decision_window,
+            "snapshot_saved": snapshot_saved,
+            "decision_locked": decision is not None,
+            "trade_executed": decision.get("trade_executed") if decision else None,
+            "decision_signal": decision.get("signal") if decision else None,
+            "no_trade_reason": decision.get("no_trade_reason") if decision else None,
+            "stake": float(decision.get("stake") or 0) if decision else 0.0,
+            "stake_mode": "adaptive_ev_tiers",
+            "stake_tier": decision.get("stake_tier") if decision else None,
+            "stake_rules": {
+                "low": SETTINGS.stake_low,
+                "mid": SETTINGS.stake_mid,
+                "high": SETTINGS.stake_high,
+                "mid_ev": SETTINGS.stake_mid_ev,
+                "high_ev": SETTINGS.stake_high_ev,
+            },
+            "settled_now": settled,
+            "sync": sync,
+            "rpc": client.rpc_status(),
+            "created_or_existing_decision": created,
+            "duration_ms": round((time.time() - started) * 1000, 2),
+            "updated_at": int(time.time()),
+        }
+        with _LAST_TICK_LOCK:
+            _LAST_TICK.clear()
+            _LAST_TICK.update(result)
+        return result
+
+
+def status() -> dict[str, Any]:
+    with _LAST_TICK_LOCK:
+        last_tick = dict(_LAST_TICK)
+    state = db.get_state() if db.enabled() else {}
+    return {
+        "enabled": SETTINGS.worker_enabled,
+        "strategy": "m9_fusion_ev_adaptive_ev_stake_shadow_quality_cooldown",
+        "version": SETTINGS.version,
+        "stake_mode": "adaptive_ev_tiers",
+        "stake_rules": {
+            "ev_below_zero": SETTINGS.stake_low,
+            "ev_zero_to_high": SETTINGS.stake_mid,
+            "ev_high_or_more": SETTINGS.stake_high,
+            "minimum_ev": SETTINGS.min_trade_ev,
+            "high_ev_threshold": SETTINGS.stake_high_ev,
+        },
+        "shadow_filter_enabled": SETTINGS.shadow_filter_enabled,
+        "shadow_recent_window": SETTINGS.shadow_recent_window,
+        "shadow_recent_min_pnl": SETTINGS.shadow_recent_min_pnl,
+        "quality_window": SETTINGS.quality_window,
+        "quality_min_samples": SETTINGS.quality_min_samples,
+        "quality_min_win_rate": SETTINGS.quality_min_win_rate,
+        "quality_min_profit_factor": SETTINGS.quality_min_profit_factor,
+        "cooldown_loss_streak_trigger": SETTINGS.cooldown_loss_streak_trigger,
+        "cooldown_rounds": SETTINGS.cooldown_rounds,
+        "cooldown_rounds_remaining": int(state.get("cooldown_rounds_remaining") or 0),
+        "require_payout_bucket_ready": SETTINGS.require_payout_bucket_ready,
+        "last_tick": last_tick,
     }
-    return dict(_LAST)
 
 
 async def loop(stop: asyncio.Event) -> None:
@@ -153,14 +359,17 @@ async def loop(stop: asyncio.Event) -> None:
         try:
             await asyncio.to_thread(tick)
         except Exception as exc:
-            global _LAST
-            _LAST = {
-                "ok": False,
-                "message": "tick_error",
-                "error": f"{type(exc).__name__}: {exc}",
-                "updated_at": int(time.time()),
-            }
+            with _LAST_TICK_LOCK:
+                _LAST_TICK.clear()
+                _LAST_TICK.update(
+                    {
+                        "ok": False,
+                        "message": "tick_error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "updated_at": int(time.time()),
+                    }
+                )
         try:
-            await asyncio.wait_for(stop.wait(), timeout=settings.poll_seconds)
+            await asyncio.wait_for(stop.wait(), timeout=SETTINGS.poll_seconds)
         except asyncio.TimeoutError:
             pass
