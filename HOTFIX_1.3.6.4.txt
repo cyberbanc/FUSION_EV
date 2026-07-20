@@ -1,0 +1,23 @@
+M9 FUSION EV 1.3.6.4 — DB GET_DECISION HOTFIX
+
+ПРИЧИНА ОШИБКИ
+После исправления BSC POA worker дошёл до чтения текущего решения и вызвал:
+
+    db.get_decision(betting_epoch)
+
+Функция использовалась в app/worker.py, app/main.py и app/db.py, но отсутствовала
+в app/db.py. Поэтому каждый tick завершался ошибкой:
+
+    AttributeError: module 'app.db' has no attribute 'get_decision'
+
+ИСПРАВЛЕНИЕ
+В app/db.py добавлена единая функция get_decision(betting_epoch), которая:
+- читает решение из фактически выбранной init_db() таблицы решений;
+- использует RealDictCursor;
+- возвращает dict при наличии строки;
+- возвращает None, если решения для epoch ещё нет;
+- совместима с существующими таблицами fusion_decisions / paper_decisions;
+- не создаёт и не изменяет записи.
+
+Дополнительно добавлены два unit-теста функции чтения.
+Торговая стратегия и структура PostgreSQL не изменены.

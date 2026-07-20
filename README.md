@@ -69,3 +69,10 @@ python -m pytest -q
 
 Торговая логика, adaptive EV stakes, shadow/quality фильтры, cooldown, банк и
 PostgreSQL-история не изменены. Код Tilda менять не требуется.
+
+## 1.3.6.4 — DB get_decision hotfix
+
+Добавлена отсутствовавшая функция `app.db.get_decision(betting_epoch)`. Она
+используется worker, `/signal` и защитой от повторного создания решения. Hotfix
+устраняет `AttributeError` после успешного подключения к BSC RPC. Стратегия,
+ставки, фильтры, банк и PostgreSQL-история не изменены.

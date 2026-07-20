@@ -483,6 +483,25 @@ def get_state(for_update: bool = False, cursor=None) -> dict[str, Any]:
         return dict(row) if row else {}
 
 
+def get_decision(betting_epoch: int) -> dict[str, Any] | None:
+    """Return one decision by betting epoch, or None when it does not exist.
+
+    This is the single read helper used by the worker and the cached /signal
+    endpoint. Keeping it in the database layer prevents duplicate SQL and
+    preserves compatibility with whichever legacy decisions table init_db()
+    selected for the current PostgreSQL database.
+    """
+    with conn() as c, c.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            sql.SQL("SELECT * FROM {} WHERE betting_epoch=%s LIMIT 1").format(
+                _ident(_DECISIONS_TABLE)
+            ),
+            (int(betting_epoch),),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
 def insert_decision(data: dict[str, Any]) -> dict[str, Any]:
     columns = [
         "betting_epoch", "live_epoch", "locked_at_chain_timestamp",
