@@ -1,0 +1,31 @@
+M9 FUSION EV 1.3.6.3 — УСТАНОВКА
+
+1. Распакуйте ZIP.
+2. Полностью замените содержимое текущего GitHub-репозитория файлами из пакета.
+3. В Railway откройте Variables и замените/добавьте значения из RAILWAY_VARIABLES_FUSION_EV_1.3.6.3.txt.
+4. Обязательно обновите MODEL_VERSION=1.3.6.3.
+5. Не удаляйте PostgreSQL и не меняйте DATABASE_URL.
+6. Оставьте одну Railway replica и выполните Redeploy.
+
+ПРОВЕРКА ПОСЛЕ DEPLOY
+
+1. Откройте /healthz — должен вернуться HTTP 200 и version=1.3.6.3.
+2. Откройте /health — connected=true и database_connected=true.
+3. Откройте /signal несколько раз. Ответ должен приходить быстро, без запуска нового tick.
+4. На Tilda индикатор должен смениться с Failed to fetch на Подключено.
+5. Верхние live-блоки должны обновляться из кэша worker, а история и банк — из PostgreSQL.
+
+ВАЖНО
+
+- Торговая логика и ставки $5/$10/$15 не изменены.
+- /signal теперь только читает кэш и не обращается самостоятельно к BSC/Chainlink/PancakeSwap.
+- Background worker остаётся единственным исполнителем tick().
+- Старая история, банк и PnL сохраняются.
+
+
+ПРОВЕРКА ПОСЛЕ DEPLOY
+- /healthz: version=1.3.6.3
+- /health: worker.last_tick.ok=true
+- /health: worker.last_tick не содержит extraData/POA error
+- /signal: betting_epoch, seconds_to_lock и snapshot заполнены
+- rpc_status.poa_middleware=true

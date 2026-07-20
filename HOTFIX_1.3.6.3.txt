@@ -1,0 +1,21 @@
+M9 FUSION EV 1.3.6.3 — BSC POA MIDDLEWARE HOTFIX
+
+ПРИЧИНА
+Web3.py 7.12 проверял поле extraData блока как Ethereum mainnet и отклонял
+BNB Smart Chain блоки, где extraData длиннее 32 байт. Из-за этого каждый tick
+падал до публикации live snapshot, а Tilda показывала WAIT и пустые значения.
+
+ИСПРАВЛЕНИЕ
+- импортирован ExtraDataToPOAMiddleware из web3.middleware;
+- middleware внедряется layer=0 для КАЖДОГО URL из BSC_RPC_URLS;
+- rpc_status теперь показывает poa_middleware=true;
+- MODEL_VERSION обновлена до 1.3.6.3.
+
+НЕ ИЗМЕНЕНО
+- торговые сигналы и веса моделей;
+- порог MIN_TRADE_EV=-0.06;
+- ставки $5/$10/$15;
+- shadow и quality фильтры;
+- cooldown;
+- PostgreSQL, банк, PnL и история;
+- endpoint-контракты для Tilda.

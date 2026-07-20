@@ -6,6 +6,7 @@ from dataclasses import asdict
 from typing import Any
 
 from web3 import Web3
+from web3.middleware import ExtraDataToPOAMiddleware
 
 from .abi import CHAINLINK_ABI, PREDICTION_ABI
 from .config import SETTINGS
@@ -21,7 +22,13 @@ class PancakeClient:
         self._oracle_address: str | None = None
         self._oracle_decimals: int | None = None
         for url in SETTINGS.bsc_rpc_urls:
-            self._providers.append((url, Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 12}))))
+            web3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 12}))
+            # BNB Smart Chain is a PoSA/PoA-style EVM chain whose block
+            # ``extraData`` field is longer than Ethereum mainnet's 32-byte
+            # validation limit.  Web3.py v7 requires this middleware at layer
+            # zero before calls such as eth_getBlockByNumber/get_block().
+            web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+            self._providers.append((url, web3))
         if not self._providers:
             raise RuntimeError("No BSC RPC URL configured")
 
@@ -62,6 +69,7 @@ class PancakeClient:
             "active_rpc_url": self.active_url,
             "rpc_count": len(self._providers),
             "last_errors": dict(self._last_errors),
+            "poa_middleware": True,
         }
 
     def _prediction(self, w3: Web3):

@@ -55,6 +55,11 @@ try:
     import web3  # noqa: F401
 except ModuleNotFoundError:
     web3 = types.ModuleType("web3")
+    middleware = types.ModuleType("web3.middleware")
+
+    class _MiddlewareOnion:
+        def inject(self, middleware_item, layer=0):
+            return None
 
     class Web3:
         class HTTPProvider:
@@ -62,11 +67,16 @@ except ModuleNotFoundError:
                 pass
 
         def __init__(self, *args, **kwargs):
-            pass
+            self.middleware_onion = _MiddlewareOnion()
 
         @staticmethod
         def to_checksum_address(value):
             return value
 
+    class ExtraDataToPOAMiddleware:
+        pass
+
     web3.Web3 = Web3
+    middleware.ExtraDataToPOAMiddleware = ExtraDataToPOAMiddleware
     sys.modules["web3"] = web3
+    sys.modules["web3.middleware"] = middleware
