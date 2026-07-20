@@ -49,7 +49,7 @@ def _csv_strings(name: str, default: Iterable[str]) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Settings:
-    version: str = os.getenv("MODEL_VERSION", "1.3.6")
+    version: str = os.getenv("MODEL_VERSION", "1.3.6.1")
     database_url: str = os.getenv("DATABASE_URL", "")
     bsc_rpc_urls: tuple[str, ...] = _csv_strings(
         "BSC_RPC_URLS",

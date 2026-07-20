@@ -92,6 +92,12 @@ def root():
     }
 
 
+@app.get("/healthz")
+def healthz():
+    # Lightweight Railway healthcheck: no external RPC or database calls.
+    return {"ok": True, "service": "m9-fusion-ev-paper-bot", "version": SETTINGS.version}
+
+
 @app.get("/health")
 def health():
     client = from_env()
