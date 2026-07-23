@@ -1,0 +1,14 @@
+M9 FUSION EV 1.3.6.6 — NEGATIVE EV OFF, $10 / $15
+
+CHANGES
+- LOW_NEGATIVE_EV $5 trading removed.
+- selected EV < 0 is always NO_TRADE.
+- 0 <= selected EV < 0.05 keeps the $10 MID_EV stake.
+- selected EV >= 0.05 keeps the $15 HIGH_EV stake.
+- Payout, shadow recent, quality and cooldown rules are unchanged.
+- PostgreSQL history and paper bank are preserved.
+- New stake_mode: nonnegative_ev_10_15.
+
+SAFETY
+Even when TRADE_FILTER_ENABLED=false, negative EV cannot create a trade because
+stake_for_ev returns eligible=false and stake=0.

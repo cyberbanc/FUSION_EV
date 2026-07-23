@@ -1,0 +1,1899 @@
+<div
+  id="m9-fusion-dashboard"
+  data-api-base="https://fusion-ev.up.railway.app"
+>
+  <div class="m9f-shell">
+
+    <div class="m9f-header">
+      <div>
+        <div class="m9f-kicker">PANCAKESWAP PREDICTION</div>
+        <div class="m9f-title-row">
+          <h2>M9 FUSION EV</h2>
+          <span class="m9f-badge">HIGH EV ONLY</span>
+          <span id="m9fVersionBadge" class="m9f-badge">v1.3.6.6</span>
+          <span class="m9f-badge m9f-badge-paper">PAPER</span>
+        </div>
+        <div class="m9f-subtitle">
+          Chainlink + PancakeSwap + Binance + Bayesian M9 + устойчивые паттерны
+        </div>
+      </div>
+
+      <div class="m9f-connection">
+        <span id="m9fConnectionDot" class="m9f-dot"></span>
+        <span id="m9fConnectionText">Подключение...</span>
+      </div>
+    </div>
+
+    <div class="m9f-grid m9f-grid-main">
+      <div class="m9f-card m9f-signal-card">
+        <div class="m9f-card-label">СИГНАЛ НА ТЕКУЩИЙ РАУНД</div>
+
+        <div id="m9fSignalValue" class="m9f-signal m9f-wait">WAIT</div>
+
+        <div id="m9fSignalStatus" class="m9f-status-text">
+          Ожидание данных и окна фиксации T−40
+        </div>
+
+        <div class="m9f-info-row">
+          <div>
+            <span class="m9f-small-label">ЭПОХА</span>
+            <strong id="m9fBettingEpoch">—</strong>
+          </div>
+          <div>
+            <span class="m9f-small-label">ДО LOCK</span>
+            <strong id="m9fSecondsToLock">—</strong>
+          </div>
+          <div>
+            <span class="m9f-small-label">СТАТУС</span>
+            <strong id="m9fDecisionStatus">WAIT</strong>
+          </div>
+          <div>
+            <span class="m9f-small-label">КАЧЕСТВО</span>
+            <strong id="m9fDecisionQuality">—</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="m9f-card m9f-stake-card">
+        <div class="m9f-card-label">РЕШЕНИЕ HIGH_EV ONLY</div>
+
+        <div class="m9f-stake-value">
+          $<span id="m9fStakeValue">—</span>
+        </div>
+        <div id="m9fStakeCaption" class="m9f-stake-caption">РАЗМЕР PAPER-СТАВКИ</div>
+
+        <div class="m9f-stake-meta">
+          <div>
+            <span>Выбранный EV</span>
+            <strong id="m9fSelectedEv">—</strong>
+          </div>
+          <div>
+            <span>Согласие моделей</span>
+            <strong id="m9fAgreement">—</strong>
+          </div>
+          <div>
+            <span>Ожидаемый коэффициент</span>
+            <strong id="m9fSelectedCoeff">—</strong>
+          </div>
+        </div>
+
+        <div class="m9f-stake-scale">
+          <span>EV &lt; 0% → NO TRADE</span>
+          <span>EV 0–5% → $10 · EV ≥5% → $15</span>
+        </div>
+        <div id="m9fStakeCaptionRule" class="m9f-hint">
+          Отрицательный EV → NO TRADE · EV 0–0,05 → $10 · EV ≥0,05 → $15 после payout, shadow, quality и cooldown
+        </div>
+      </div>
+    </div>
+
+    <div class="m9f-grid m9f-grid-probability">
+      <div class="m9f-card">
+        <div class="m9f-card-label">ВЕРОЯТНОСТЬ И ОЖИДАЕМАЯ ПРИБЫЛЬ</div>
+
+        <div class="m9f-side-comparison">
+          <div class="m9f-side-box m9f-side-up">
+            <div class="m9f-side-title">UP</div>
+            <div id="m9fProbabilityUp" class="m9f-side-probability">—%</div>
+            <div class="m9f-side-row">
+              <span>Коэффициент</span>
+              <strong id="m9fCoeffUp">—</strong>
+            </div>
+            <div class="m9f-side-row">
+              <span>EV</span>
+              <strong id="m9fEvUp">—</strong>
+            </div>
+          </div>
+
+          <div class="m9f-side-box m9f-side-down">
+            <div class="m9f-side-title">DOWN</div>
+            <div id="m9fProbabilityDown" class="m9f-side-probability">—%</div>
+            <div class="m9f-side-row">
+              <span>Коэффициент</span>
+              <strong id="m9fCoeffDown">—</strong>
+            </div>
+            <div class="m9f-side-row">
+              <span>EV</span>
+              <strong id="m9fEvDown">—</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="m9f-probability-bar" aria-label="Распределение вероятности">
+          <div id="m9fProbabilityUpBar" class="m9f-probability-up" style="width:50%"></div>
+          <div id="m9fProbabilityDownBar" class="m9f-probability-down" style="width:50%"></div>
+        </div>
+
+        <div id="m9fEvExplanation" class="m9f-rule-box">
+          Бот сравнивает ожидаемую прибыль UP и DOWN и выбирает более выгодную сторону.
+        </div>
+      </div>
+
+      <div class="m9f-card">
+        <div class="m9f-card-label">ТЕКУЩИЙ РЫНОК PANCAKESWAP</div>
+
+        <div class="m9f-pool-head">
+          <div class="m9f-up-text">
+            UP <strong id="m9fBullShare">—%</strong>
+          </div>
+          <div class="m9f-down-text">
+            DOWN <strong id="m9fBearShare">—%</strong>
+          </div>
+        </div>
+
+        <div class="m9f-pool-bar">
+          <div id="m9fBullBar" class="m9f-bull-bar" style="width:50%"></div>
+          <div id="m9fBearBar" class="m9f-bear-bar" style="width:50%"></div>
+        </div>
+
+        <div class="m9f-pool-grid">
+          <div>
+            <span>Пул UP</span>
+            <strong><span id="m9fBullAmount">—</span> BNB</strong>
+          </div>
+          <div>
+            <span>Пул DOWN</span>
+            <strong><span id="m9fBearAmount">—</span> BNB</strong>
+          </div>
+          <div>
+            <span>Общий пул</span>
+            <strong><span id="m9fTotalAmount">—</span> BNB</strong>
+          </div>
+          <div>
+            <span>Текущая сторона</span>
+            <strong id="m9fProvisionalWinner">—</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="m9f-grid m9f-grid-market">
+      <div class="m9f-card">
+        <div class="m9f-card-label">CHAINLINK И ДВИЖЕНИЕ ТЕКУЩЕГО РАУНДА</div>
+
+        <div class="m9f-market-grid">
+          <div>
+            <span>Цена Chainlink</span>
+            <strong id="m9fChainlinkPrice">—</strong>
+          </div>
+          <div>
+            <span>Цена LOCK</span>
+            <strong id="m9fLockPrice">—</strong>
+          </div>
+          <div>
+            <span>Движение</span>
+            <strong id="m9fLiveMoveSigned">—</strong>
+          </div>
+          <div>
+            <span>Модуль движения</span>
+            <strong id="m9fLiveMovePoints">—</strong>
+          </div>
+          <div>
+            <span>Возраст Oracle</span>
+            <strong id="m9fOracleAge">—</strong>
+          </div>
+          <div>
+            <span>Live epoch</span>
+            <strong id="m9fLiveEpoch">—</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="m9f-card">
+        <div class="m9f-card-label">SHADOW-ФИЛЬТР И ЗАЩИТА</div>
+
+        <div class="m9f-warmup-head">
+          <div>
+            <span>Источник сигнала</span>
+            <strong id="m9fSourceKey">—</strong>
+          </div>
+          <div>
+            <span>Режим ставки</span>
+            <strong id="m9fStakeMode">EV ≥0 · $10 / $15</strong>
+          </div>
+        </div>
+
+        <div class="m9f-risk-grid">
+          <div>
+            <span>Shadow-решение</span>
+            <strong id="m9fShadowStatus">—</strong>
+          </div>
+          <div>
+            <span>Последние 8: P&amp;L</span>
+            <strong id="m9fShadowRecentPnl">—</strong>
+          </div>
+          <div>
+            <span>Quality 30: WR / PF</span>
+            <strong id="m9fShadowQuality">—</strong>
+          </div>
+          <div>
+            <span>Текущая серия LOSS</span>
+            <strong id="m9fCurrentLossStreak">—</strong>
+          </div>
+          <div>
+            <span>Cooldown осталось</span>
+            <strong id="m9fCooldownRemaining">—</strong>
+          </div>
+          <div>
+            <span>Реальные транзакции</span>
+            <strong class="m9f-yellow-text">ОТКЛЮЧЕНЫ</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="m9f-card m9f-models-card">
+      <div class="m9f-history-head">
+        <div>
+          <div class="m9f-card-label">ПЯТЬ КОМПОНЕНТОВ FUSION</div>
+          <div class="m9f-history-count">Вероятность UP, надёжность и текущий адаптивный вес</div>
+        </div>
+        <a
+          id="m9fModelPerformanceLink"
+          href="#"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="m9f-action-button m9f-action-button-secondary"
+        >Shadow-статистика</a>
+      </div>
+
+      <div id="m9fModelsGrid" class="m9f-models-grid">
+        <div class="m9f-model-placeholder">Ожидание данных моделей...</div>
+      </div>
+    </div>
+
+    <div class="m9f-card m9f-shadow-overview-card">
+      <div class="m9f-history-head">
+        <div>
+          <div class="m9f-card-label">SHADOW-ПРОИЗВОДИТЕЛЬНОСТЬ ИСТОЧНИКОВ</div>
+          <div class="m9f-history-count">Виртуальные результаты последних сигналов без влияния на банк</div>
+        </div>
+      </div>
+      <div id="m9fShadowGrid" class="m9f-shadow-grid">
+        <div class="m9f-model-placeholder">Ожидание shadow-статистики...</div>
+      </div>
+    </div>
+
+    <div class="m9f-grid m9f-grid-stats">
+      <div class="m9f-stat-card">
+        <span>БАНК</span>
+        <strong>$<span id="m9fBankValue">—</span></strong>
+      </div>
+      <div class="m9f-stat-card">
+        <span>ПРИБЫЛЬ</span>
+        <strong id="m9fProfitValue">—</strong>
+      </div>
+      <div class="m9f-stat-card">
+        <span>СДЕЛКИ</span>
+        <strong id="m9fTradesValue">—</strong>
+      </div>
+      <div class="m9f-stat-card">
+        <span>ТОЧНОСТЬ</span>
+        <strong id="m9fWinRateValue">—%</strong>
+      </div>
+      <div class="m9f-stat-card">
+        <span>WIN / LOSS</span>
+        <strong>
+          <span id="m9fWinsValue" class="m9f-up-text">—</span>
+          /
+          <span id="m9fLossesValue" class="m9f-down-text">—</span>
+        </strong>
+      </div>
+      <div class="m9f-stat-card">
+        <span>MAX LOSS STREAK</span>
+        <strong id="m9fMaxLossStreak">—</strong>
+      </div>
+      <div class="m9f-stat-card">
+        <span>MAX DRAWDOWN</span>
+        <strong id="m9fMaxDrawdown">—</strong>
+      </div>
+    </div>
+
+    <div class="m9f-card m9f-history-card">
+      <div class="m9f-history-head">
+        <div>
+          <div class="m9f-card-label">ПОСЛЕДНИЕ СДЕЛКИ</div>
+          <div class="m9f-history-count">
+            Всего в PostgreSQL: <strong id="m9fTotalHistory">—</strong>
+          </div>
+        </div>
+
+        <div class="m9f-history-actions">
+          <a
+            id="m9fFullHistoryLink"
+            href="#"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="m9f-action-button"
+          >Скачать всю историю JSON</a>
+
+          <a
+            id="m9fCsvLink"
+            href="#"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="m9f-action-button m9f-action-button-secondary"
+          >Скачать CSV</a>
+        </div>
+      </div>
+
+      <div class="m9f-table-wrap">
+        <table class="m9f-table">
+          <thead>
+            <tr>
+              <th>Эпоха</th>
+              <th>Сигнал</th>
+              <th>Вероятность</th>
+              <th>EV</th>
+              <th title="Для закрытой сделки: фактический NET-коэффициент. Для открытой или пропущенной: ожидаемый коэффициент на момент решения.">Коэффициент NET</th>
+              <th>Ставка</th>
+              <th>Результат</th>
+              <th>P&amp;L</th>
+              <th>Банк</th>
+            </tr>
+          </thead>
+          <tbody id="m9fHistoryBody">
+            <tr>
+              <td colspan="9" class="m9f-empty">Ожидание данных...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="m9f-footer">
+      <span>
+        Последнее обновление:
+        <strong id="m9fLastUpdated">—</strong>
+      </span>
+      <span id="m9fWorkerStatus">M9 FUSION EV · Paper trading</span>
+    </div>
+  </div>
+</div>
+
+<style>
+  #m9-fusion-dashboard {
+    --m9f-bg: #07101d;
+    --m9f-card: rgba(17, 30, 49, 0.93);
+    --m9f-border: rgba(255, 255, 255, 0.09);
+    --m9f-text: #f4f7fb;
+    --m9f-muted: #8fa1b8;
+    --m9f-up: #19d68c;
+    --m9f-down: #ff5d73;
+    --m9f-yellow: #f8c64e;
+    --m9f-blue: #5ca9ff;
+    --m9f-purple: #a786ff;
+
+    width: 100%;
+    padding: 32px 16px;
+    box-sizing: border-box;
+    color: var(--m9f-text);
+    font-family: Inter, Arial, sans-serif;
+    background:
+      radial-gradient(circle at 7% 0%, rgba(92, 169, 255, 0.20), transparent 34%),
+      radial-gradient(circle at 92% 7%, rgba(167, 134, 255, 0.12), transparent 30%),
+      radial-gradient(circle at 55% 100%, rgba(25, 214, 140, 0.06), transparent 36%),
+      var(--m9f-bg);
+  }
+
+  #m9-fusion-dashboard * {
+    box-sizing: border-box;
+  }
+
+  .m9f-shell {
+    width: 100%;
+    max-width: 1220px;
+    margin: 0 auto;
+  }
+
+  .m9f-header,
+  .m9f-history-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 20px;
+  }
+
+  .m9f-header {
+    margin-bottom: 22px;
+  }
+
+  .m9f-kicker {
+    margin-bottom: 8px;
+    color: var(--m9f-blue);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.16em;
+  }
+
+  .m9f-title-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .m9f-header h2 {
+    margin: 0;
+    font-size: 36px;
+    line-height: 1.05;
+    font-weight: 850;
+    letter-spacing: -0.02em;
+  }
+
+  .m9f-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    color: var(--m9f-purple);
+    background: rgba(167, 134, 255, 0.10);
+    border: 1px solid rgba(167, 134, 255, 0.26);
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+  }
+
+  .m9f-badge-paper {
+    color: var(--m9f-yellow);
+    background: rgba(248, 198, 78, 0.10);
+    border-color: rgba(248, 198, 78, 0.24);
+  }
+
+  .m9f-subtitle {
+    margin-top: 9px;
+    color: var(--m9f-muted);
+    font-size: 14px;
+  }
+
+  .m9f-connection {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 10px 14px;
+    border: 1px solid var(--m9f-border);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--m9f-muted);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .m9f-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #738099;
+    box-shadow: 0 0 0 4px rgba(115, 128, 153, 0.12);
+  }
+
+  .m9f-dot.m9f-online {
+    background: var(--m9f-up);
+    box-shadow: 0 0 0 4px rgba(25, 214, 140, 0.12);
+  }
+
+  .m9f-dot.m9f-offline {
+    background: var(--m9f-down);
+    box-shadow: 0 0 0 4px rgba(255, 93, 115, 0.12);
+  }
+
+  .m9f-grid {
+    display: grid;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .m9f-grid-main {
+    grid-template-columns: 1.55fr 1fr;
+  }
+
+  .m9f-grid-probability {
+    grid-template-columns: 1.35fr 1fr;
+  }
+
+  .m9f-grid-market {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .m9f-grid-stats {
+    grid-template-columns: repeat(7, 1fr);
+  }
+
+  .m9f-card,
+  .m9f-stat-card {
+    border: 1px solid var(--m9f-border);
+    border-radius: 18px;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.026), transparent),
+      var(--m9f-card);
+    box-shadow: 0 18px 45px rgba(0, 0, 0, 0.22);
+  }
+
+  .m9f-card {
+    padding: 22px;
+  }
+
+  .m9f-card-label {
+    margin-bottom: 16px;
+    color: var(--m9f-muted);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.13em;
+  }
+
+  .m9f-signal-card {
+    min-height: 286px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .m9f-signal {
+    margin-top: 4px;
+    font-size: 76px;
+    line-height: 0.95;
+    font-weight: 900;
+    letter-spacing: -0.055em;
+  }
+
+  .m9f-signal.m9f-up,
+  .m9f-up-text {
+    color: var(--m9f-up);
+  }
+
+  .m9f-signal.m9f-down,
+  .m9f-down-text {
+    color: var(--m9f-down);
+  }
+
+  .m9f-signal.m9f-wait,
+  .m9f-signal.m9f-no-trade,
+  .m9f-yellow-text {
+    color: var(--m9f-yellow);
+  }
+
+  .m9f-signal.m9f-no-trade {
+    font-size: 54px;
+    letter-spacing: -0.035em;
+  }
+
+  .m9f-status-text {
+    margin-top: 14px;
+    color: var(--m9f-muted);
+    font-size: 14px;
+  }
+
+  .m9f-info-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-top: auto;
+    padding-top: 28px;
+  }
+
+  .m9f-info-row > div,
+  .m9f-stake-meta > div,
+  .m9f-pool-grid > div,
+  .m9f-market-grid > div,
+  .m9f-risk-grid > div,
+  .m9f-warmup-head > div {
+    padding: 12px 13px;
+    border-radius: 13px;
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.055);
+  }
+
+  .m9f-small-label,
+  .m9f-info-row span,
+  .m9f-stake-meta span,
+  .m9f-pool-grid span,
+  .m9f-market-grid span,
+  .m9f-risk-grid span,
+  .m9f-warmup-head span {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--m9f-muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+
+  .m9f-info-row strong,
+  .m9f-stake-meta strong,
+  .m9f-pool-grid strong,
+  .m9f-market-grid strong,
+  .m9f-risk-grid strong,
+  .m9f-warmup-head strong {
+    font-size: 14px;
+  }
+
+  .m9f-stake-card {
+    min-height: 286px;
+  }
+
+  .m9f-stake-value {
+    margin-top: 7px;
+    font-size: 64px;
+    line-height: 1;
+    font-weight: 900;
+    letter-spacing: -0.045em;
+  }
+
+  .m9f-stake-caption {
+    margin-top: 8px;
+    color: var(--m9f-muted);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+  }
+
+  .m9f-stake-meta {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 20px;
+  }
+
+  .m9f-stake-scale {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .m9f-stake-scale span {
+    padding: 8px;
+    text-align: center;
+    border-radius: 10px;
+    color: var(--m9f-blue);
+    background: rgba(92, 169, 255, 0.07);
+    border: 1px solid rgba(92, 169, 255, 0.14);
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .m9f-hint {
+    margin-top: 11px;
+    color: var(--m9f-muted);
+    font-size: 11px;
+  }
+
+  .m9f-side-comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .m9f-side-box {
+    padding: 18px;
+    border-radius: 16px;
+    border: 1px solid var(--m9f-border);
+  }
+
+  .m9f-side-up {
+    background: rgba(25, 214, 140, 0.055);
+  }
+
+  .m9f-side-down {
+    background: rgba(255, 93, 115, 0.055);
+  }
+
+  .m9f-side-title {
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: 0.12em;
+  }
+
+  .m9f-side-up .m9f-side-title,
+  .m9f-side-up .m9f-side-probability {
+    color: var(--m9f-up);
+  }
+
+  .m9f-side-down .m9f-side-title,
+  .m9f-side-down .m9f-side-probability {
+    color: var(--m9f-down);
+  }
+
+  .m9f-side-probability {
+    margin: 8px 0 14px;
+    font-size: 36px;
+    line-height: 1;
+    font-weight: 900;
+  }
+
+  .m9f-side-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    color: var(--m9f-muted);
+    font-size: 12px;
+  }
+
+  .m9f-side-row strong {
+    color: var(--m9f-text);
+  }
+
+  .m9f-probability-bar,
+  .m9f-pool-bar {
+    display: flex;
+    width: 100%;
+    height: 11px;
+    margin-top: 16px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .m9f-probability-up,
+  .m9f-bull-bar {
+    background: linear-gradient(90deg, rgba(25, 214, 140, 0.65), var(--m9f-up));
+    transition: width 0.35s ease;
+  }
+
+  .m9f-probability-down,
+  .m9f-bear-bar {
+    background: linear-gradient(90deg, var(--m9f-down), rgba(255, 93, 115, 0.68));
+    transition: width 0.35s ease;
+  }
+
+  .m9f-rule-box {
+    margin-top: 16px;
+    padding: 13px 14px;
+    border-radius: 13px;
+    color: var(--m9f-muted);
+    background: rgba(92, 169, 255, 0.055);
+    border: 1px solid rgba(92, 169, 255, 0.13);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .m9f-pool-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+    margin-top: 4px;
+    font-size: 13px;
+    font-weight: 800;
+  }
+
+  .m9f-pool-head strong {
+    display: block;
+    margin-top: 4px;
+    font-size: 30px;
+    line-height: 1;
+  }
+
+  .m9f-pool-grid,
+  .m9f-market-grid,
+  .m9f-risk-grid {
+    display: grid;
+    gap: 9px;
+    margin-top: 17px;
+  }
+
+  .m9f-pool-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .m9f-market-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .m9f-warmup-head {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 9px;
+  }
+
+  .m9f-warmup-track {
+    width: 100%;
+    height: 12px;
+    margin: 17px 0;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .m9f-warmup-bar {
+    height: 100%;
+    width: 0;
+    background: linear-gradient(90deg, var(--m9f-blue), var(--m9f-purple));
+    transition: width 0.35s ease;
+  }
+
+  .m9f-risk-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .m9f-models-card {
+    margin-bottom: 16px;
+  }
+
+  .m9f-models-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 11px;
+  }
+
+  .m9f-model-card {
+    position: relative;
+    min-height: 205px;
+    padding: 15px;
+    overflow: hidden;
+    border-radius: 15px;
+    background: rgba(255, 255, 255, 0.032);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .m9f-model-card.m9f-model-unavailable {
+    opacity: 0.55;
+  }
+
+  .m9f-model-title {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    align-items: center;
+    font-size: 12px;
+    font-weight: 900;
+  }
+
+  .m9f-model-status {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--m9f-up);
+  }
+
+  .m9f-model-unavailable .m9f-model-status {
+    background: var(--m9f-down);
+  }
+
+  .m9f-model-probability {
+    margin: 17px 0 15px;
+    font-size: 30px;
+    font-weight: 900;
+  }
+
+  .m9f-model-probability.m9f-model-up {
+    color: var(--m9f-up);
+  }
+
+  .m9f-model-probability.m9f-model-down {
+    color: var(--m9f-down);
+  }
+
+  .m9f-model-line {
+    display: flex;
+    justify-content: space-between;
+    gap: 9px;
+    padding: 7px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.055);
+    color: var(--m9f-muted);
+    font-size: 11px;
+  }
+
+  .m9f-model-line strong {
+    color: var(--m9f-text);
+  }
+
+  .m9f-model-reason {
+    margin-top: 10px;
+    color: var(--m9f-muted);
+    font-size: 10px;
+    line-height: 1.35;
+    word-break: break-word;
+  }
+
+  .m9f-model-placeholder {
+    grid-column: 1 / -1;
+    padding: 30px;
+    text-align: center;
+    color: var(--m9f-muted);
+  }
+
+  .m9f-shadow-overview-card {
+    margin-bottom: 16px;
+  }
+
+  .m9f-shadow-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 11px;
+  }
+
+  .m9f-shadow-source-card {
+    padding: 16px;
+    border-radius: 15px;
+    background: rgba(255, 255, 255, 0.032);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .m9f-shadow-source-title {
+    margin-bottom: 13px;
+    font-size: 12px;
+    font-weight: 900;
+  }
+
+  .m9f-shadow-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .m9f-shadow-main strong {
+    font-size: 25px;
+  }
+
+  .m9f-shadow-main span {
+    color: var(--m9f-muted);
+    font-size: 10px;
+  }
+
+  .m9f-shadow-side-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .m9f-shadow-side-grid > div {
+    padding: 10px;
+    border-radius: 11px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  .m9f-shadow-side-grid span {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--m9f-muted);
+    font-size: 9px;
+    font-weight: 800;
+  }
+
+  .m9f-stat-card {
+    min-height: 106px;
+    padding: 17px 14px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+
+  .m9f-stat-card > span {
+    color: var(--m9f-muted);
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.09em;
+  }
+
+  .m9f-stat-card > strong {
+    font-size: 19px;
+    line-height: 1.1;
+  }
+
+  .m9f-history-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 9px;
+  }
+
+  .m9f-action-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
+    padding: 9px 13px;
+    border-radius: 11px;
+    color: #06101b !important;
+    background: var(--m9f-blue);
+    font-size: 11px;
+    font-weight: 850;
+    text-decoration: none !important;
+  }
+
+  .m9f-action-button-secondary {
+    color: var(--m9f-text) !important;
+    background: rgba(255, 255, 255, 0.055);
+    border: 1px solid var(--m9f-border);
+  }
+
+  .m9f-history-count {
+    margin-top: -7px;
+    color: var(--m9f-muted);
+    font-size: 12px;
+  }
+
+  .m9f-table-wrap {
+    width: 100%;
+    margin-top: 18px;
+    overflow-x: auto;
+    border-radius: 13px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .m9f-table {
+    width: 100%;
+    min-width: 920px;
+    border-collapse: collapse;
+  }
+
+  .m9f-table th,
+  .m9f-table td {
+    padding: 12px 11px;
+    text-align: left;
+    white-space: nowrap;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+  }
+
+  .m9f-table th {
+    color: var(--m9f-muted);
+    background: rgba(255, 255, 255, 0.025);
+    font-size: 9px;
+    font-weight: 900;
+    letter-spacing: 0.07em;
+  }
+
+  .m9f-table td {
+    font-size: 12px;
+  }
+
+  .m9f-coeff-cell {
+    min-width: 116px;
+    line-height: 1.15;
+  }
+
+  .m9f-coeff-main {
+    color: var(--m9f-text);
+    font-size: 12px;
+    font-weight: 850;
+  }
+
+  .m9f-coeff-label {
+    margin-top: 4px;
+    color: var(--m9f-muted);
+    font-size: 8px;
+    font-weight: 850;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .m9f-coeff-fact {
+    color: var(--m9f-up);
+  }
+
+  .m9f-coeff-expected {
+    color: var(--m9f-yellow);
+  }
+
+  .m9f-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .m9f-badge-cell {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 54px;
+    padding: 5px 8px;
+    border-radius: 999px;
+    font-size: 9px;
+    font-weight: 900;
+    letter-spacing: 0.05em;
+  }
+
+  .m9f-badge-up,
+  .m9f-badge-win {
+    color: var(--m9f-up);
+    background: rgba(25, 214, 140, 0.10);
+  }
+
+  .m9f-badge-down,
+  .m9f-badge-loss {
+    color: var(--m9f-down);
+    background: rgba(255, 93, 115, 0.10);
+  }
+
+  .m9f-badge-open,
+  .m9f-badge-draw,
+  .m9f-badge-skip,
+  .m9f-badge-no-trade {
+    color: var(--m9f-yellow);
+    background: rgba(248, 198, 78, 0.10);
+  }
+
+  .m9f-empty {
+    padding: 28px !important;
+    text-align: center !important;
+    color: var(--m9f-muted);
+  }
+
+  .m9f-footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 15px;
+    padding: 5px 2px 0;
+    color: var(--m9f-muted);
+    font-size: 11px;
+  }
+
+  @media (max-width: 1080px) {
+    .m9f-grid-stats {
+      grid-template-columns: repeat(4, 1fr);
+    }
+
+    .m9f-models-grid,
+    .m9f-shadow-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+
+  @media (max-width: 900px) {
+    .m9f-grid-main,
+    .m9f-grid-probability,
+    .m9f-grid-market {
+      grid-template-columns: 1fr;
+    }
+
+    .m9f-info-row,
+    .m9f-market-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (max-width: 640px) {
+    #m9-fusion-dashboard {
+      padding: 24px 10px;
+    }
+
+    .m9f-header,
+    .m9f-history-head,
+    .m9f-footer {
+      flex-direction: column;
+    }
+
+    .m9f-header h2 {
+      font-size: 29px;
+    }
+
+    .m9f-signal {
+      font-size: 60px;
+    }
+
+    .m9f-stake-value {
+      font-size: 54px;
+    }
+
+    .m9f-info-row,
+    .m9f-stake-meta,
+    .m9f-pool-grid,
+    .m9f-warmup-head,
+    .m9f-risk-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .m9f-side-comparison,
+    .m9f-market-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .m9f-models-grid,
+    .m9f-shadow-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .m9f-grid-stats {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    .m9f-history-actions {
+      justify-content: flex-start;
+    }
+  }
+</style>
+
+<script>
+(function () {
+  'use strict';
+
+  const root = document.getElementById('m9-fusion-dashboard');
+  if (!root) return;
+
+  const API_BASE = String(root.dataset.apiBase || '').replace(/\/+$/, '');
+  const SIGNAL_REFRESH_MS = 2000;
+  const STATUS_REFRESH_MS = 5000;
+  const MODEL_REFRESH_MS = 15000;
+  const REQUEST_TIMEOUT_MS = 12000;
+
+  let signalRequestRunning = false;
+  let statusRequestRunning = false;
+  let modelRequestRunning = false;
+  let lastSignalSuccess = 0;
+  let lastStatusSuccess = 0;
+
+  const $ = (id) => root.querySelector('#' + id);
+
+  $('m9fFullHistoryLink').href = API_BASE + '/status?history=all&limit=100000';
+  $('m9fCsvLink').href = API_BASE + '/history/export.csv';
+  $('m9fModelPerformanceLink').href = API_BASE + '/shadow/performance';
+
+  function getFirst() {
+    for (let i = 0; i < arguments.length; i += 1) {
+      const value = arguments[i];
+      if (value !== undefined && value !== null) return value;
+    }
+    return undefined;
+  }
+
+  function safeNumber(value, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : (fallback === undefined ? 0 : fallback);
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, safeNumber(value, min)));
+  }
+
+  function formatNumber(value, digits) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '—';
+    const precision = digits === undefined ? 2 : digits;
+    return number.toLocaleString('ru-RU', {
+      minimumFractionDigits: precision,
+      maximumFractionDigits: precision
+    });
+  }
+
+  function formatCompact(value, maxDigits) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '—';
+    return number.toLocaleString('ru-RU', {
+      maximumFractionDigits: maxDigits === undefined ? 4 : maxDigits
+    });
+  }
+
+  function formatPercent(value, digits, alreadyPercent) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '—';
+    const percent = alreadyPercent ? number : number * 100;
+    return formatNumber(percent, digits === undefined ? 1 : digits) + '%';
+  }
+
+  function formatSignedPercent(value, digits) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '—';
+    const percent = number * 100;
+    const sign = percent > 0 ? '+' : '';
+    return sign + formatNumber(percent, digits === undefined ? 2 : digits) + '%';
+  }
+
+  function formatProfitFactor(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '—';
+    if (number >= 99) return '∞';
+    return formatNumber(number, 2);
+  }
+
+  function formatSignedMoney(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '—';
+    const sign = number > 0 ? '+' : number < 0 ? '−' : '';
+    return sign + '$' + formatNumber(Math.abs(number), 2);
+  }
+
+  function formatSignedNumber(value, digits) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '—';
+    const sign = number > 0 ? '+' : '';
+    return sign + formatNumber(number, digits === undefined ? 4 : digits);
+  }
+
+  function formatSeconds(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '—';
+    return Math.round(number) + ' сек';
+  }
+
+  function escapeHtml(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function normalizeSide(value) {
+    const side = String(value || '').toUpperCase();
+    return side === 'UP' || side === 'DOWN' || side === 'NO_TRADE' ? side : '—';
+  }
+
+  function setText(id, value) {
+    const element = $(id);
+    if (element) element.textContent = value;
+  }
+
+  function setSideClass(element, side) {
+    if (!element) return;
+    element.classList.remove('m9f-up', 'm9f-down', 'm9f-wait', 'm9f-no-trade');
+    if (side === 'UP') element.classList.add('m9f-up');
+    else if (side === 'DOWN') element.classList.add('m9f-down');
+    else if (side === 'NO_TRADE') element.classList.add('m9f-no-trade');
+    else element.classList.add('m9f-wait');
+  }
+
+  function setValueColor(element, number) {
+    if (!element) return;
+    element.classList.remove('m9f-up-text', 'm9f-down-text', 'm9f-yellow-text');
+    if (!Number.isFinite(Number(number)) || Number(number) === 0) {
+      element.classList.add('m9f-yellow-text');
+    } else if (Number(number) > 0) {
+      element.classList.add('m9f-up-text');
+    } else {
+      element.classList.add('m9f-down-text');
+    }
+  }
+
+  function friendlyFilterReason(value) {
+    const reason = String(value || '').toUpperCase();
+    const map = {
+      COOLDOWN_AFTER_3_REAL_LOSSES: 'COOLDOWN ПОСЛЕ 3 LOSS',
+      PAYOUT_BUCKET_NOT_READY: 'PAYOUT-ДИАПАЗОН НЕ ГОТОВ',
+      EV_BELOW_MINIMUM: 'EV НИЖЕ МИНИМУМА',
+      BELOW_HIGH_EV_THRESHOLD: 'EV НИЖЕ 5% — СТАРОЕ ПРАВИЛО',
+      NEGATIVE_EV_DISABLED: 'ОТРИЦАТЕЛЬНЫЙ EV ОТКЛЮЧЁН',
+      SHADOW_RECENT_PNL_DEGRADED: 'SHADOW P&L УХУДШИЛСЯ',
+      QUALITY_WIN_RATE_BELOW_MINIMUM: 'QUALITY WR НИЖЕ 45%',
+      QUALITY_PROFIT_FACTOR_BELOW_MINIMUM: 'QUALITY PF НИЖЕ 0,85',
+      QUALITY_WARMUP_ALLOWED: 'QUALITY WARMUP РАЗРЕШЁН',
+      SHADOW_QUALITY_CONFIRMED: 'SHADOW + QUALITY ПОДТВЕРЖДЕНЫ',
+      SHADOW_FILTER_DISABLED: 'SHADOW-ФИЛЬТР ОТКЛЮЧЁН'
+    };
+    return map[reason] || reason.replace(/_/g, ' ') || '—';
+  }
+
+  function friendlyQuality(value) {
+    const quality = String(value || '—').toUpperCase();
+    const reasonCodes = [
+      'COOLDOWN_AFTER_3_REAL_LOSSES',
+      'PAYOUT_BUCKET_NOT_READY',
+      'EV_BELOW_MINIMUM',
+      'BELOW_HIGH_EV_THRESHOLD',
+      'NEGATIVE_EV_DISABLED',
+      'SHADOW_RECENT_PNL_DEGRADED',
+      'QUALITY_WIN_RATE_BELOW_MINIMUM',
+      'QUALITY_PROFIT_FACTOR_BELOW_MINIMUM',
+      'QUALITY_WARMUP_ALLOWED',
+      'SHADOW_QUALITY_CONFIRMED',
+      'SHADOW_FILTER_DISABLED'
+    ];
+    const code = reasonCodes.find(function (item) { return quality.indexOf(item) !== -1; });
+    if (quality.indexOf('V1_3_6_NO_TRADE') === 0 || quality.indexOf('V1_3_6_5_NO_TRADE') === 0 || quality.indexOf('V1_3_6_6_NO_TRADE') === 0) {
+      return 'NO TRADE · ' + friendlyFilterReason(code || quality);
+    }
+    if (quality.indexOf('V1_3_6_TRADE') === 0 || quality.indexOf('V1_3_6_5_TRADE') === 0 || quality.indexOf('V1_3_6_6_TRADE') === 0) {
+      return 'TRADE · ' + friendlyFilterReason(code || quality);
+    }
+    return quality.replace(/_/g, ' ');
+  }
+
+  function friendlySourceKey(value) {
+    const map = {
+      EV_PRIMARY: 'ОСНОВНОЙ EV',
+      CROWD_BINANCE_FALLBACK: 'CROWD + BINANCE',
+      PROBABILITY_FALLBACK: 'PROBABILITY FALLBACK'
+    };
+    const key = String(value || '').toUpperCase();
+    return map[key] || key.replace(/_/g, ' ') || '—';
+  }
+
+  function friendlyComponentName(name) {
+    const map = {
+      price: 'Цена / Chainlink',
+      binance: 'Binance',
+      crowd: 'Пулы / Толпа',
+      m9: 'Bayesian M9',
+      pattern: 'Паттерны'
+    };
+    return map[String(name || '').toLowerCase()] || String(name || 'Модель');
+  }
+
+  function friendlyReason(reason) {
+    const map = {
+      bayesian_exact_state_with_decay: 'Состояние M9 со сглаживанием и затуханием истории',
+      stable_multilength_pattern: 'Устойчивый паттерн на нескольких частях истории',
+      no_stable_pattern: 'Надёжный паттерн сейчас не найден',
+      insufficient_history: 'Недостаточно истории',
+      extreme_crowd_mild_contrarian: 'Экстремальный перекос: мягкая логика против толпы',
+      moderate_crowd_mild_follow: 'Умеренный перекос: мягкое следование за толпой'
+    };
+    return map[String(reason || '')] || String(reason || '—').replace(/_/g, ' ');
+  }
+
+  async function fetchJson(path) {
+    if (!API_BASE || API_BASE.indexOf('YOUR-M9-FUSION-EV-DOMAIN') !== -1) {
+      throw new Error('Укажите Railway-домен в data-api-base');
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(API_BASE + path, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        throw new Error('HTTP ' + response.status);
+      }
+
+      return await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function markOnline() {
+    const dot = $('m9fConnectionDot');
+    dot.classList.remove('m9f-offline');
+    dot.classList.add('m9f-online');
+    setText('m9fConnectionText', 'Подключено');
+  }
+
+  function markOffline(message) {
+    const dot = $('m9fConnectionDot');
+    dot.classList.remove('m9f-online');
+    dot.classList.add('m9f-offline');
+    setText('m9fConnectionText', message || 'Нет соединения');
+  }
+
+  function renderModels(components, weights) {
+    const grid = $('m9fModelsGrid');
+    const list = Array.isArray(components) ? components : [];
+    const weightMap = weights && typeof weights === 'object' ? weights : {};
+    const expectedOrder = ['price', 'binance', 'crowd', 'm9', 'pattern'];
+    const componentMap = {};
+
+    list.forEach(function (item) {
+      componentMap[String(item.name || '').toLowerCase()] = item;
+    });
+
+    grid.innerHTML = expectedOrder.map(function (name) {
+      const item = componentMap[name] || {
+        name: name,
+        probability_up: 0.5,
+        reliability: 0,
+        available: false,
+        reason: 'нет данных'
+      };
+      const available = Boolean(item.available);
+      const probability = safeNumber(item.probability_up, 0.5);
+      const side = probability >= 0.5 ? 'UP' : 'DOWN';
+      const sideProbability = side === 'UP' ? probability : 1 - probability;
+      const reliability = safeNumber(item.reliability, 0);
+      const weight = safeNumber(weightMap[name], 0);
+      const availabilityText = available ? 'ONLINE' : 'НЕТ ДАННЫХ';
+
+      return (
+        '<div class="m9f-model-card ' + (available ? '' : 'm9f-model-unavailable') + '">' +
+          '<div class="m9f-model-title">' +
+            '<span>' + escapeHtml(friendlyComponentName(name)) + '</span>' +
+            '<span class="m9f-model-status"></span>' +
+          '</div>' +
+          '<div class="m9f-model-probability ' + (side === 'UP' ? 'm9f-model-up' : 'm9f-model-down') + '">' +
+            escapeHtml(side) + ' ' + escapeHtml(formatPercent(sideProbability, 1)) +
+          '</div>' +
+          '<div class="m9f-model-line"><span>Вес</span><strong>' + escapeHtml(formatPercent(weight, 1)) + '</strong></div>' +
+          '<div class="m9f-model-line"><span>Надёжность</span><strong>' + escapeHtml(formatPercent(reliability, 1)) + '</strong></div>' +
+          '<div class="m9f-model-line"><span>Статус</span><strong>' + escapeHtml(availabilityText) + '</strong></div>' +
+          '<div class="m9f-model-reason">' + escapeHtml(friendlyReason(item.reason)) + '</div>' +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  function renderShadowOverview(data) {
+    const grid = $('m9fShadowGrid');
+    if (!grid) return;
+    const sources = data && data.sources ? data.sources : {};
+    const order = ['EV_PRIMARY', 'CROWD_BINANCE_FALLBACK', 'PROBABILITY_FALLBACK'];
+
+    grid.innerHTML = order.map(function (key) {
+      const source = sources[key] || {};
+      const overall = source.overall || {};
+      const up = source.UP || {};
+      const down = source.DOWN || {};
+      const pnl = Number(overall.pnl);
+      const pnlClass = Number.isFinite(pnl) && pnl >= 0 ? 'm9f-up-text' : 'm9f-down-text';
+
+      return (
+        '<div class="m9f-shadow-source-card">' +
+          '<div class="m9f-shadow-source-title">' + escapeHtml(friendlySourceKey(key)) + '</div>' +
+          '<div class="m9f-shadow-main">' +
+            '<div><span>SHADOW P&L</span><strong class="' + pnlClass + '">' + escapeHtml(formatSignedMoney(pnl)) + '</strong></div>' +
+            '<div><span>PF</span><strong>' + escapeHtml(formatProfitFactor(overall.profit_factor)) + '</strong></div>' +
+          '</div>' +
+          '<div class="m9f-model-line"><span>Сигналы</span><strong>' + escapeHtml(formatCompact(overall.samples, 0)) + '</strong></div>' +
+          '<div class="m9f-model-line"><span>Общий WR</span><strong>' + escapeHtml(formatPercent(overall.win_rate, 1)) + '</strong></div>' +
+          '<div class="m9f-shadow-side-grid">' +
+            '<div><span>UP · WR / P&L</span><strong>' + escapeHtml(formatPercent(up.win_rate, 1)) + ' · ' + escapeHtml(formatSignedMoney(up.pnl)) + '</strong></div>' +
+            '<div><span>DOWN · WR / P&L</span><strong>' + escapeHtml(formatPercent(down.win_rate, 1)) + ' · ' + escapeHtml(formatSignedMoney(down.pnl)) + '</strong></div>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  function renderSignal(data) {
+    const snapshot = data.snapshot || data.snapshot_json || {};
+    const features = data.features || data.features_json || {};
+    const components = data.components || data.components_json || [];
+    const weights = data.weights || data.weights_json || {};
+    const shadowStats = data.shadow_stats || data.shadow_stats_json || features.shadow_stats || {};
+    const recentStats = shadowStats.recent || {};
+    const qualityStats = shadowStats.quality || {};
+    const locked = Boolean(data.decision_locked);
+    const analysisSignal = normalizeSide(data.analysis_signal || data.signal);
+    const tradeExecuted = data.trade_executed === true;
+    const displaySignal = !locked ? 'WAIT' : (tradeExecuted ? analysisSignal : 'NO_TRADE');
+    const probabilityUp = safeNumber(data.probability_up, 0.5);
+    const probabilityDown = safeNumber(data.probability_down, 1 - probabilityUp);
+    const evUp = Number(data.ev_up);
+    const evDown = Number(data.ev_down);
+    const selectedEv = Number(data.selected_ev);
+    const coeffUp = Number(getFirst(data.expected_coeff_up, snapshot.current_net_coeff_up));
+    const coeffDown = Number(getFirst(data.expected_coeff_down, snapshot.current_net_coeff_down));
+    const selectedCoeff = analysisSignal === 'UP' ? coeffUp : analysisSignal === 'DOWN' ? coeffDown : NaN;
+    const agreement = Number(data.agreement);
+    const noTradeReason = data.no_trade_reason || data.shadow_reason || features.no_trade_reason || '';
+    const shadowReason = data.shadow_reason || features.shadow_reason || '';
+    const sourceKey = data.source_key || features.source_key || '';
+    const stakeTier = String(data.stake_tier || features.stake_tier || '').toUpperCase();
+    const cooldownApplied = Boolean(data.cooldown_applied || features.cooldown_applied);
+
+    setText('m9fSignalValue', displaySignal === 'NO_TRADE' ? 'NO TRADE' : displaySignal);
+    setSideClass($('m9fSignalValue'), displaySignal);
+
+    if (locked && !tradeExecuted) {
+      setText('m9fSignalStatus', 'Раунд пропущен: ' + friendlyFilterReason(noTradeReason));
+    } else if (locked) {
+      setText('m9fSignalStatus', 'Решение зафиксировано: ставка ' + formatSignedMoney(data.stake).replace('+', '') + ' на ' + analysisSignal);
+    } else if (snapshot.decision_window || data.decision_window) {
+      setText('m9fSignalStatus', 'Окно решения открыто, выполняется фиксация сигнала');
+    } else {
+      setText('m9fSignalStatus', 'Ожидание окна фиксации T−40');
+    }
+
+    setText('m9fBettingEpoch', getFirst(data.betting_epoch, snapshot.betting_epoch, '—'));
+    setText('m9fLiveEpoch', getFirst(data.live_epoch, snapshot.live_epoch, '—'));
+    setText('m9fSecondsToLock', formatSeconds(getFirst(data.seconds_to_lock, snapshot.seconds_to_lock)));
+    setText('m9fDecisionStatus', locked ? (tradeExecuted ? 'LOCKED' : 'NO TRADE') : 'WAIT');
+    setText('m9fDecisionQuality', friendlyQuality(data.decision_quality));
+
+    setText('m9fStakeValue', formatNumber(data.stake, 2));
+    setText('m9fStakeCaption', tradeExecuted ? ((stakeTier || 'EV TIER') + ' · $' + formatNumber(stake, 0)) : 'СТАВКА НЕ ВЫПОЛНЯЕТСЯ');
+    setText('m9fSelectedEv', formatSignedPercent(selectedEv, 2));
+    setValueColor($('m9fSelectedEv'), selectedEv);
+    setText('m9fAgreement', formatPercent(agreement, 1));
+    setText('m9fSelectedCoeff', formatNumber(selectedCoeff, 3));
+
+    setText('m9fProbabilityUp', formatPercent(probabilityUp, 1));
+    setText('m9fProbabilityDown', formatPercent(probabilityDown, 1));
+    setText('m9fCoeffUp', formatNumber(coeffUp, 3));
+    setText('m9fCoeffDown', formatNumber(coeffDown, 3));
+    setText('m9fEvUp', formatSignedPercent(evUp, 2));
+    setText('m9fEvDown', formatSignedPercent(evDown, 2));
+    setValueColor($('m9fEvUp'), evUp);
+    setValueColor($('m9fEvDown'), evDown);
+
+    const upWidth = clamp(probabilityUp * 100, 0, 100);
+    $('m9fProbabilityUpBar').style.width = upWidth + '%';
+    $('m9fProbabilityDownBar').style.width = (100 - upWidth) + '%';
+
+    if (locked && !tradeExecuted) {
+      setText('m9fEvExplanation', 'NO TRADE: ' + friendlyFilterReason(noTradeReason) + '. Аналитический сигнал: ' + analysisSignal + '.');
+    } else if (locked && tradeExecuted) {
+      setText('m9fEvExplanation', 'HIGH_EV сигнал ' + analysisSignal + ' прошёл payout, shadow, quality и cooldown. Фиксированная ставка: $' + formatNumber(data.stake, 2) + '.');
+    } else {
+      setText('m9fEvExplanation', 'Торговля только при selected EV ≥ 5% и прохождении payout, shadow, quality и cooldown.');
+    }
+
+    const bullShare = safeNumber(snapshot.betting_bull_share_pct, 50);
+    const bearShare = safeNumber(snapshot.betting_bear_share_pct, 100 - bullShare);
+    setText('m9fBullShare', formatPercent(bullShare, 1, true));
+    setText('m9fBearShare', formatPercent(bearShare, 1, true));
+    $('m9fBullBar').style.width = clamp(bullShare, 0, 100) + '%';
+    $('m9fBearBar').style.width = clamp(bearShare, 0, 100) + '%';
+    setText('m9fBullAmount', formatNumber(snapshot.betting_bull_bnb, 4));
+    setText('m9fBearAmount', formatNumber(snapshot.betting_bear_bnb, 4));
+    setText('m9fTotalAmount', formatNumber(snapshot.betting_total_bnb, 4));
+
+    const provisional = normalizeSide(snapshot.provisional_winner);
+    setText('m9fProvisionalWinner', provisional);
+    $('m9fProvisionalWinner').classList.remove('m9f-up-text', 'm9f-down-text');
+    if (provisional === 'UP') $('m9fProvisionalWinner').classList.add('m9f-up-text');
+    if (provisional === 'DOWN') $('m9fProvisionalWinner').classList.add('m9f-down-text');
+
+    setText('m9fChainlinkPrice', formatNumber(snapshot.chainlink_price, 5));
+    setText('m9fLockPrice', formatNumber(snapshot.live_lock_price, 5));
+    setText('m9fLiveMoveSigned', formatSignedNumber(snapshot.live_move_signed, 5));
+    setValueColor($('m9fLiveMoveSigned'), snapshot.live_move_signed);
+    setText('m9fLiveMovePoints', formatNumber(snapshot.live_move_points, 5));
+    setText('m9fOracleAge', formatSeconds(snapshot.oracle_age_seconds));
+
+    setText('m9fSourceKey', friendlySourceKey(sourceKey));
+    setText('m9fStakeMode', 'EV ≥0 · $10 / $15');
+    setText('m9fShadowStatus', cooldownApplied ? 'COOLDOWN' : friendlyFilterReason(shadowReason));
+    setValueColor($('m9fShadowStatus'), tradeExecuted ? 1 : -1);
+    setText('m9fShadowRecentPnl', formatSignedMoney(recentStats.pnl));
+    setValueColor($('m9fShadowRecentPnl'), recentStats.pnl);
+    setText('m9fShadowQuality', formatPercent(qualityStats.win_rate, 1) + ' / ' + formatProfitFactor(qualityStats.profit_factor));
+
+    renderModels(components, weights);
+  }
+
+  function resultBadge(value) {
+    const outcome = String(value || 'OPEN').toUpperCase();
+    let type = 'open';
+    if (outcome === 'WIN') type = 'win';
+    else if (outcome === 'LOSS') type = 'loss';
+    else if (outcome === 'DRAW') type = 'draw';
+    else if (outcome === 'SKIP') type = 'skip';
+    return '<span class="m9f-badge-cell m9f-badge-' + type + '">' + escapeHtml(outcome) + '</span>';
+  }
+
+  function signalBadge(value) {
+    const side = normalizeSide(value);
+    const type = side === 'UP' ? 'up' : side === 'DOWN' ? 'down' : side === 'NO_TRADE' ? 'no-trade' : 'open';
+    return '<span class="m9f-badge-cell m9f-badge-' + type + '">' + escapeHtml(side) + '</span>';
+  }
+
+  function expectedCoeffForSide(item, side) {
+    if (side === 'UP') return Number(item.expected_coeff_up);
+    if (side === 'DOWN') return Number(item.expected_coeff_down);
+    return NaN;
+  }
+
+  function actualNetCoeffForSide(item, side) {
+    let value = NaN;
+
+    if (side === 'UP') {
+      value = Number(getFirst(
+        item.final_coeff_up,
+        item.actual_coeff_up,
+        item.final_net_coeff_up
+      ));
+    } else if (side === 'DOWN') {
+      value = Number(getFirst(
+        item.final_coeff_down,
+        item.actual_coeff_down,
+        item.final_net_coeff_down
+      ));
+    }
+
+    if (!Number.isFinite(value) && normalizeSide(item.final_winner) === side) {
+      value = Number(item.final_coeff_net);
+    }
+
+    // For a winning trade the actual net coefficient can always be recovered
+    // directly from the credited P&L.
+    const outcome = String(item.outcome || '').toUpperCase();
+    const stake = Number(item.stake);
+    const pnl = Number(item.pnl);
+    if (
+      !Number.isFinite(value) &&
+      outcome === 'WIN' &&
+      Number.isFinite(stake) &&
+      stake > 0 &&
+      Number.isFinite(pnl)
+    ) {
+      value = (stake + pnl) / stake;
+    }
+
+    return value;
+  }
+
+  function renderCoefficientCell(item, side) {
+    const expected = expectedCoeffForSide(item, side);
+    const actualNet = actualNetCoeffForSide(item, side);
+    const outcome = String(item.outcome || '').toUpperCase();
+    const stake = Number(item.stake);
+    const isExecutedTrade = item.trade_executed !== false && Number.isFinite(stake) && stake > 0;
+    const isClosedTrade = isExecutedTrade && Boolean(item.settled) && outcome !== 'OPEN';
+
+    if (isClosedTrade && Number.isFinite(actualNet)) {
+      const expectedText = Number.isFinite(expected)
+        ? ' · ожид. ' + formatNumber(expected, 3)
+        : '';
+      return (
+        '<div class="m9f-coeff-cell">' +
+          '<div class="m9f-coeff-main">' + escapeHtml(formatNumber(actualNet, 3)) + '</div>' +
+          '<div class="m9f-coeff-label m9f-coeff-fact">ФАКТ NET' + escapeHtml(expectedText) + '</div>' +
+        '</div>'
+      );
+    }
+
+    return (
+      '<div class="m9f-coeff-cell">' +
+        '<div class="m9f-coeff-main">' + escapeHtml(formatNumber(expected, 3)) + '</div>' +
+        '<div class="m9f-coeff-label m9f-coeff-expected">ОЖИДАЕМЫЙ</div>' +
+      '</div>'
+    );
+  }
+
+  function renderHistory(rows) {
+    const body = $('m9fHistoryBody');
+    const history = Array.isArray(rows) ? rows : [];
+
+    if (!history.length) {
+      body.innerHTML = '<tr><td colspan="9" class="m9f-empty">Пока нет решений в истории</td></tr>';
+      return;
+    }
+
+    body.innerHTML = history.slice(0, 15).map(function (item) {
+      const analysisSignal = normalizeSide(item.signal);
+      const signal = item.trade_executed === false ? 'NO_TRADE' : analysisSignal;
+      const probability = analysisSignal === 'UP'
+        ? item.probability_up
+        : analysisSignal === 'DOWN'
+          ? item.probability_down
+          : null;
+      const pnl = Number(item.pnl);
+      const bank = getFirst(item.bank_after, item.bank_before);
+
+      return (
+        '<tr>' +
+          '<td>' + escapeHtml(item.betting_epoch) + '</td>' +
+          '<td>' + signalBadge(signal) + '</td>' +
+          '<td>' + escapeHtml(formatPercent(probability, 1)) + '</td>' +
+          '<td class="' + (safeNumber(item.selected_ev, 0) >= 0 ? 'm9f-up-text' : 'm9f-down-text') + '">' +
+            escapeHtml(formatSignedPercent(item.selected_ev, 2)) +
+          '</td>' +
+          '<td>' + renderCoefficientCell(item, analysisSignal) + '</td>' +
+          '<td>$' + escapeHtml(formatNumber(item.stake, 2)) + (item.stake_tier && item.stake_tier !== 'NO_TRADE' ? ' · ' + escapeHtml(item.stake_tier) : '') + '</td>' +
+          '<td>' + resultBadge(item.outcome || (item.settled ? 'SETTLED' : 'OPEN')) + '</td>' +
+          '<td class="' + (Number.isFinite(pnl) && pnl >= 0 ? 'm9f-up-text' : 'm9f-down-text') + '">' +
+            escapeHtml(Number.isFinite(pnl) ? formatSignedMoney(pnl) : '—') +
+          '</td>' +
+          '<td>$' + escapeHtml(formatNumber(bank, 2)) + '</td>' +
+        '</tr>'
+      );
+    }).join('');
+  }
+
+  function renderStatus(data) {
+    const state = data.paper_state || {};
+    const bank = safeNumber(state.bank, 0);
+    const startBank = safeNumber(state.start_bank, 0);
+    const profit = bank - startBank;
+    const wins = safeNumber(state.wins, 0);
+    const losses = safeNumber(state.losses, 0);
+    const trades = safeNumber(state.trades_count, wins + losses);
+    const decidedTrades = wins + losses;
+    const winRate = decidedTrades > 0 ? wins / decidedTrades : 0;
+
+    setText('m9fBankValue', formatNumber(bank, 2));
+    setText('m9fProfitValue', formatSignedMoney(profit));
+    setValueColor($('m9fProfitValue'), profit);
+    setText('m9fTradesValue', formatCompact(trades, 0));
+    setText('m9fWinRateValue', formatPercent(winRate, 2));
+    setText('m9fWinsValue', formatCompact(wins, 0));
+    setText('m9fLossesValue', formatCompact(losses, 0));
+    setText('m9fMaxLossStreak', formatCompact(state.max_loss_streak, 0));
+    setText('m9fMaxDrawdown', '$' + formatNumber(state.max_drawdown, 2));
+    setText('m9fCurrentLossStreak', formatCompact(state.current_loss_streak, 0));
+    setText('m9fCooldownRemaining', formatCompact(getFirst(state.cooldown_rounds_remaining, data.worker && data.worker.cooldown_rounds_remaining), 0));
+    setText('m9fVersionBadge', 'v' + String(data.version || '1.3.6.6'));
+    setText('m9fTotalHistory', formatCompact(data.history_count, 0));
+
+    const worker = data.worker || {};
+    if (worker.ok === false) {
+      setText('m9fWorkerStatus', 'Worker error: ' + (worker.error || worker.message || 'unknown'));
+    } else if (worker.ok === true) {
+      setText('m9fWorkerStatus', 'Worker ONLINE · M9 FUSION EV ' + String(data.version || '') + ' · Paper trading');
+    } else {
+      setText('m9fWorkerStatus', 'M9 FUSION EV · Paper trading');
+    }
+
+    renderHistory(data.history || []);
+  }
+
+  async function loadSignal() {
+    if (signalRequestRunning) return;
+    signalRequestRunning = true;
+
+    try {
+      const data = await fetchJson('/signal');
+      renderSignal(data);
+      lastSignalSuccess = Date.now();
+      markOnline();
+      setText('m9fLastUpdated', new Date().toLocaleTimeString('ru-RU'));
+    } catch (error) {
+      if (Date.now() - lastSignalSuccess > 10000) {
+        markOffline(error && error.message ? error.message : 'Ошибка API');
+      }
+    } finally {
+      signalRequestRunning = false;
+    }
+  }
+
+  async function loadStatus() {
+    if (statusRequestRunning) return;
+    statusRequestRunning = true;
+
+    try {
+      const data = await fetchJson('/status?history=recent&limit=20');
+      renderStatus(data);
+      lastStatusSuccess = Date.now();
+      markOnline();
+    } catch (error) {
+      if (Date.now() - lastStatusSuccess > 15000) {
+        markOffline(error && error.message ? error.message : 'Ошибка истории');
+      }
+    } finally {
+      statusRequestRunning = false;
+    }
+  }
+
+  async function loadShadowPerformance() {
+    if (modelRequestRunning) return;
+    modelRequestRunning = true;
+
+    try {
+      const data = await fetchJson('/shadow/performance');
+      renderShadowOverview(data);
+    } catch (error) {
+      // Основной dashboard продолжает работать без дополнительной shadow-сводки.
+    } finally {
+      modelRequestRunning = false;
+    }
+  }
+
+  function validateConfiguration() {
+    if (!API_BASE || API_BASE.indexOf('YOUR-M9-FUSION-EV-DOMAIN') !== -1) {
+      markOffline('Укажите домен Railway в первой строке кода');
+      setText('m9fSignalStatus', 'Замените YOUR-M9-FUSION-EV-DOMAIN на домен нового Railway-сервиса');
+      return false;
+    }
+    return true;
+  }
+
+  if (!validateConfiguration()) return;
+
+  loadShadowPerformance().then(loadSignal);
+  loadStatus();
+
+  setInterval(loadSignal, SIGNAL_REFRESH_MS);
+  setInterval(loadStatus, STATUS_REFRESH_MS);
+  setInterval(loadShadowPerformance, MODEL_REFRESH_MS);
+})();
+</script>

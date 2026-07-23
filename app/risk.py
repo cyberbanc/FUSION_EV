@@ -9,20 +9,22 @@ from .config import SETTINGS
 class StakeDecision:
     stake: float
     tier: str
+    eligible: bool
 
 
 def stake_for_ev(selected_ev: float) -> StakeDecision:
-    """Return the stake tier for an already-approved signal.
+    """Return the non-negative EV stake decision.
 
-    The size depends only on current EV. It is not a martingale and does not
-    depend on previous wins or losses.
+    Negative selected EV is never eligible for a trade. Non-negative EV below
+    the HIGH_EV threshold receives $10; HIGH_EV receives $15. The stake never
+    depends on previous wins or losses.
     """
     value = float(selected_ev)
     if value < SETTINGS.stake_mid_ev:
-        return StakeDecision(float(SETTINGS.stake_low), "LOW_NEGATIVE_EV")
+        return StakeDecision(0.0, "NEGATIVE_EV_DISABLED", False)
     if value < SETTINGS.stake_high_ev:
-        return StakeDecision(float(SETTINGS.stake_mid), "MID_NONNEGATIVE_EV")
-    return StakeDecision(float(SETTINGS.stake_high), "HIGH_EV")
+        return StakeDecision(float(SETTINGS.stake_mid), "MID_NONNEGATIVE_EV", True)
+    return StakeDecision(float(SETTINGS.stake_high), "HIGH_EV", True)
 
 
 def should_arm_cooldown(current_loss_streak: int) -> bool:

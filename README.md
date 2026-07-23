@@ -1,78 +1,40 @@
-# M9 Fusion EV 1.3.5 — Dynamic Shadow + Fixed $10
+# M9 Fusion EV 1.3.6.6 — Negative EV OFF, $10 / $15
 
-Paper-бот PancakeSwap Prediction BNB 5m.
+Paper-trading bot for PancakeSwap Prediction BNB rounds.
 
-## Главное изменение
-
-Версия 1.3.5 сохраняет динамический shadow-фильтр версии 1.3.4, но полностью отключает Fibonacci.
-
-Каждая разрешённая paper-сделка выполняется фиксированной ставкой:
+## Trading rule
 
 ```text
-$10
+selected EV < 0.00       -> NO_TRADE
+0.00 <= selected EV < .05 -> MID_NONNEGATIVE_EV -> $10
+selected EV >= 0.05      -> HIGH_EV -> $15
 ```
 
-- WIN: следующая разрешённая сделка снова $10;
-- LOSS: следующая разрешённая сделка снова $10;
-- SKIP / shadow-сигнал: ставка не выполняется;
-- чётность `betting_epoch` не влияет на размер ставки.
+The signal still must pass all existing version 1.3.6.4 protections:
 
-## Shadow-фильтр
+- payout bucket ready;
+- shadow recent PnL;
+- quality win rate;
+- quality profit factor;
+- cooldown after each completed block of three real losses.
 
-Каждый сигнал виртуально закрывается даже при пропуске реальной paper-ставки. Отдельно отслеживаются:
+Negative-EV decisions remain in PostgreSQL history with `stake=0`,
+`trade_executed=false`, and a NO_TRADE reason.
 
-- источник сигнала;
-- направление UP/DOWN;
-- последние 15 результатов;
-- виртуальный PnL при $10;
-- Profit Factor;
-- точность и серия проигрышей.
+## Persistence
 
-Сделка допускается при `selected_ev >= -0.05`, если последние 15 shadow-сигналов для того же источника и направления не дали PnL `<= -$20`.
+Existing PostgreSQL tables, bank, PnL and complete history are preserved.
+Do not delete PostgreSQL and do not change `DATABASE_URL` during deployment.
 
-## Совместимость с существующей базой
+## Endpoints
 
-Старый банк, PnL и история сохраняются. Fibonacci-поля в существующей PostgreSQL не удаляются, но версия 1.3.5 их не читает и не меняет. Все новые решения имеют фиксированную ставку $10.
-
-## API
-
+- `/healthz`
 - `/health`
 - `/signal`
 - `/status?history=recent&limit=30`
-- `/history?limit=1000`
+- `/status?history=all&limit=100000`
 - `/history/export.csv`
-- `/model/performance`
 - `/shadow/performance`
 
-## Проверка проекта
-
-```bash
-pip install -r requirements-dev.txt
-python -m pytest -q
-```
-
-Полные шаги установки находятся в `INSTALL_FUSION_EV_1.3.5.txt`.
-
-
-## HOTFIX 1.3.6.1
-- Исправлены литеральные фигурные скобки JSONB DEFAULT в app/db.py.
-- Устранён startup crash psycopg2.sql.SQL.format()/IndexError.
-- Railway healthcheck переведён на лёгкий /healthz, подробная диагностика остаётся на /health.
-- Логика сигналов и ставок $5/$10/$15 не изменена.
-
-
-## 1.3.6.3 — BSC POA hotfix
-
-Для каждого BSC RPC-провайдера Web3.py v7 теперь автоматически внедряет
-`ExtraDataToPOAMiddleware` на нулевом слое. Это устраняет падение worker с
-ошибкой `The field extraData is ... bytes, but should be 32`.
-
-Торговая логика, adaptive EV stakes, shadow/quality фильтры, cooldown, банк и
-PostgreSQL-история не изменены. Код Tilda менять не требуется.
-
-## 1.3.6.4 — DB get_decision hotfix
-
-Добавлена отсутствовавшая функция `app.db.get_decision(betting_epoch)`. Она
-используется worker, `/signal` и защитой от повторного создания решения. Hotfix
-устраняет `AttributeError` после успешного подключения к BSC RPC. Стратегия,
-ставки, фильтры, банк и PostgreSQL-история не изменены.
+See `INSTALL_FUSION_EV_1.3.6.6.txt` and
+`RAILWAY_VARIABLES_FUSION_EV_1.3.6.6.txt`.

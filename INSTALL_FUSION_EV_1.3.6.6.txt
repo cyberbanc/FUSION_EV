@@ -1,0 +1,31 @@
+M9 FUSION EV 1.3.6.6 — INSTALLATION
+
+1. Download the complete GitHub ZIP.
+2. Replace all files in the current GitHub repository with the ZIP contents.
+3. Commit/push the changes.
+4. In Railway keep the existing PostgreSQL service and DATABASE_URL.
+5. Replace/update variables using RAILWAY_VARIABLES_FUSION_EV_1.3.6.6.txt.
+6. Redeploy the service.
+
+REQUIRED CHANGED VARIABLES
+MODEL_VERSION=1.3.6.6
+MIN_TRADE_EV=0
+STAKE_MID=10
+STAKE_HIGH=15
+STAKE_MID_EV=0
+STAKE_HIGH_EV=0.05
+
+DELETE OLD VARIABLE
+STAKE_LOW
+
+CHECK AFTER DEPLOY
+- /healthz returns version 1.3.6.6
+- /health returns stake_mode nonnegative_ev_10_15
+- worker.last_tick.ok is true
+- negative selected EV has stake=0 and trade_executed=false
+- EV 0..5% has stake=10 after all filters
+- EV >=5% has stake=15 after all filters
+
+TILDA
+Replace the current HTML block with
+TILDA_M9_FUSION_EV_1.3.6.6_NONNEGATIVE_EV_10_15.html.

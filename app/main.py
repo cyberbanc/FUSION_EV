@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="M9 Fusion EV Adaptive EV Shadow Bot",
+    title="M9 Fusion EV Nonnegative EV $10/$15 Bot",
     version=SETTINGS.version,
     lifespan=lifespan,
 )
@@ -78,12 +78,14 @@ def root():
         "service": "m9-fusion-ev-paper-bot",
         "version": SETTINGS.version,
         "mode": "PAPER",
-        "strategy": "adaptive EV stake $5/$10/$15 + shadow quality + loss cooldown",
-        "stake_mode": "adaptive_ev_tiers",
+        "strategy": "negative EV disabled; MID_EV $10; HIGH_EV $15; existing payout/shadow/quality/cooldown rules",
+        "stake_mode": "nonnegative_ev_10_15",
         "stake_rules": {
-            "ev_negative": SETTINGS.stake_low,
-            "ev_zero_to_0_05": SETTINGS.stake_mid,
-            "ev_ge_0_05": SETTINGS.stake_high,
+            "selected_ev_below_zero": "NO_TRADE",
+            "selected_ev_zero_to_high": SETTINGS.stake_mid,
+            "selected_ev_ge_high": SETTINGS.stake_high,
+            "mid_ev_threshold": SETTINGS.stake_mid_ev,
+            "high_ev_threshold": SETTINGS.stake_high_ev,
         },
         "signal_url": "/signal",
         "status_url": "/status?history=recent&limit=30",
@@ -112,11 +114,13 @@ def health():
         "trade_filter_enabled": SETTINGS.trade_filter_enabled,
         "shadow_filter_enabled": SETTINGS.shadow_filter_enabled,
         "min_trade_ev": SETTINGS.min_trade_ev,
-        "stake_mode": "adaptive_ev_tiers",
+        "stake_mode": "nonnegative_ev_10_15",
         "stake_rules": {
-            "ev_negative": SETTINGS.stake_low,
-            "ev_zero_to_0_05": SETTINGS.stake_mid,
-            "ev_ge_0_05": SETTINGS.stake_high,
+            "selected_ev_below_zero": "NO_TRADE",
+            "selected_ev_zero_to_high": SETTINGS.stake_mid,
+            "selected_ev_ge_high": SETTINGS.stake_high,
+            "mid_ev_threshold": SETTINGS.stake_mid_ev,
+            "high_ev_threshold": SETTINGS.stake_high_ev,
         },
     }
 

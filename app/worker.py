@@ -185,10 +185,14 @@ def create_locked_decision(snapshot) -> dict[str, Any]:
         no_trade_reason = shadow_reason
 
     stake_decision = stake_for_ev(result.selected_ev)
+    if allowed and not stake_decision.eligible:
+        allowed = False
+        no_trade_reason = "NEGATIVE_EV_DISABLED"
+
     stake = stake_decision.stake if allowed else 0.0
     stake_tier = stake_decision.tier if allowed else "NO_TRADE"
-    trade_executed = allowed
-    quality_prefix = "V1_3_6_TRADE" if trade_executed else "V1_3_6_NO_TRADE"
+    trade_executed = allowed and stake_decision.eligible and stake > 0.0
+    quality_prefix = "V1_3_6_6_TRADE" if trade_executed else "V1_3_6_6_NO_TRADE"
     decision_quality = f"{quality_prefix}_{no_trade_reason or shadow_reason}_{result.selection_reason}"
     state = db.get_state()
     features = dict(result.features)
@@ -196,19 +200,19 @@ def create_locked_decision(snapshot) -> dict[str, Any]:
         {
             "trade_executed": trade_executed,
             "no_trade_reason": no_trade_reason,
-            "trade_rule": "ADAPTIVE_EV_TIER_SHADOW_ALLOWED" if trade_executed else "NO_TRADE",
+            "trade_rule": "NONNEGATIVE_EV_TIER_ALL_FILTERS_PASSED" if trade_executed else "NO_TRADE",
             "min_trade_ev": SETTINGS.min_trade_ev,
             "shadow_filter_enabled": SETTINGS.shadow_filter_enabled,
             "shadow_allowed": shadow_allowed,
             "shadow_reason": shadow_reason,
             "shadow_stats": shadow_stats,
             "selected_payout_bucket_ready": selected_ready,
-            "stake_mode": "adaptive_ev_tiers",
+            "stake_mode": "nonnegative_ev_10_15",
             "stake_tier": stake_tier,
             "stake_rules": {
-                "negative_ev": SETTINGS.stake_low,
-                "nonnegative_below_high": SETTINGS.stake_mid,
-                "high_ev": SETTINGS.stake_high,
+                "negative_ev": "NO_TRADE",
+                "mid_ev_stake": SETTINGS.stake_mid,
+                "high_ev_stake": SETTINGS.stake_high,
                 "mid_threshold": SETTINGS.stake_mid_ev,
                 "high_threshold": SETTINGS.stake_high_ev,
             },
@@ -256,7 +260,7 @@ def create_locked_decision(snapshot) -> dict[str, Any]:
             "shadow_allowed": shadow_allowed,
             "shadow_reason": shadow_reason,
             "shadow_stats_json": shadow_stats,
-            "stake_mode": "adaptive_ev_tiers",
+            "stake_mode": "nonnegative_ev_10_15",
             "stake_tier": stake_tier,
             "cooldown_applied": cooldown_applied,
         }
@@ -303,14 +307,14 @@ def tick() -> dict[str, Any]:
             "decision_signal": decision.get("signal") if decision else None,
             "no_trade_reason": decision.get("no_trade_reason") if decision else None,
             "stake": float(decision.get("stake") or 0) if decision else 0.0,
-            "stake_mode": "adaptive_ev_tiers",
+            "stake_mode": "nonnegative_ev_10_15",
             "stake_tier": decision.get("stake_tier") if decision else None,
             "stake_rules": {
-                "low": SETTINGS.stake_low,
-                "mid": SETTINGS.stake_mid,
-                "high": SETTINGS.stake_high,
-                "mid_ev": SETTINGS.stake_mid_ev,
-                "high_ev": SETTINGS.stake_high_ev,
+                "negative_ev": "NO_TRADE",
+                "mid_ev_stake": SETTINGS.stake_mid,
+                "high_ev_stake": SETTINGS.stake_high,
+                "mid_ev_threshold": SETTINGS.stake_mid_ev,
+                "high_ev_threshold": SETTINGS.stake_high_ev,
             },
             "settled_now": settled,
             "sync": sync,
@@ -351,15 +355,16 @@ def status() -> dict[str, Any]:
     state = db.get_state() if db.enabled() else {}
     return {
         "enabled": SETTINGS.worker_enabled,
-        "strategy": "m9_fusion_ev_adaptive_ev_stake_shadow_quality_cooldown",
+        "strategy": "m9_fusion_ev_nonnegative_ev_10_15_shadow_quality_cooldown",
         "version": SETTINGS.version,
-        "stake_mode": "adaptive_ev_tiers",
+        "stake_mode": "nonnegative_ev_10_15",
         "stake_rules": {
-            "ev_below_zero": SETTINGS.stake_low,
-            "ev_zero_to_high": SETTINGS.stake_mid,
-            "ev_high_or_more": SETTINGS.stake_high,
-            "minimum_ev": SETTINGS.min_trade_ev,
+            "negative_ev": "NO_TRADE",
+            "mid_ev_stake": SETTINGS.stake_mid,
+            "high_ev_stake": SETTINGS.stake_high,
+            "mid_ev_threshold": SETTINGS.stake_mid_ev,
             "high_ev_threshold": SETTINGS.stake_high_ev,
+            "still_requires_payout_shadow_quality_cooldown": True,
         },
         "shadow_filter_enabled": SETTINGS.shadow_filter_enabled,
         "shadow_recent_window": SETTINGS.shadow_recent_window,

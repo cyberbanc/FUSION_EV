@@ -1,0 +1,17 @@
+M9 FUSION EV 1.3.6.6 — LOGIC VALIDATION
+
+Expected boundaries:
+- EV -0.0001 -> NO_TRADE, stake 0.
+- EV 0.0000 -> MID_NONNEGATIVE_EV, stake $10 if all filters pass.
+- EV 0.049999 -> MID_NONNEGATIVE_EV, stake $10 if all filters pass.
+- EV 0.050000 -> HIGH_EV, stake $15 if all filters pass.
+- EV 0.300000 -> HIGH_EV, stake $15 if all filters pass.
+
+Existing filters remain required:
+- payout bucket ready;
+- shadow recent PnL;
+- quality WR >=45% after warmup;
+- quality PF >=0.85 after warmup;
+- cooldown not active.
+
+Database/history schema is unchanged.

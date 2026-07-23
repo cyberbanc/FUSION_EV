@@ -12,7 +12,7 @@ from .config import SETTINGS
 class BinanceClient:
     def __init__(self) -> None:
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "m9-fusion-ev/1.3.6"})
+        self.session.headers.update({"User-Agent": "m9-fusion-ev/1.3.6.6"})
         self.last_error: str | None = None
         self.last_base_url: str | None = None
 

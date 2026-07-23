@@ -26,7 +26,7 @@ def test_evaluate_blocks_bad_recent_window(monkeypatch):
         return newest_first[:lookback]
 
     monkeypatch.setattr("app.db.shadow_rows", fake_rows)
-    allowed, reason, _ = shadow.evaluate("X", "UP", -0.02)
+    allowed, reason, _ = shadow.evaluate("X", "UP", 0.02)
     assert allowed is False
     assert reason == "SHADOW_RECENT_PNL_DEGRADED"
 
@@ -56,7 +56,7 @@ def test_evaluate_allows_healthy_signal(monkeypatch):
         return rows[:lookback]
 
     monkeypatch.setattr("app.db.shadow_rows", fake_rows)
-    allowed, reason, _ = shadow.evaluate("X", "DOWN", -0.02)
+    allowed, reason, _ = shadow.evaluate("X", "DOWN", 0.02)
     assert allowed is True
     assert reason == "SHADOW_QUALITY_CONFIRMED"
 

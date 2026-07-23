@@ -49,7 +49,7 @@ def _csv_strings(name: str, default: Iterable[str]) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Settings:
-    version: str = os.getenv("MODEL_VERSION", "1.3.6.4")
+    version: str = os.getenv("MODEL_VERSION", "1.3.6.6")
     database_url: str = os.getenv("DATABASE_URL", "")
     bsc_rpc_urls: tuple[str, ...] = _csv_strings(
         "BSC_RPC_URLS",
@@ -71,9 +71,9 @@ class Settings:
     start_bank: float = _float("START_BANK", 500.0)
     treasury_fee: float = _float("TREASURY_FEE", 0.03)
 
-    # EV-tiered paper stake. The size depends only on current selected EV,
-    # never on the previous trade result.
-    stake_low: float = _float("STAKE_LOW", 5.0)
+    # Non-negative EV paper stake. Negative selected EV is always NO_TRADE.
+    # The size depends only on current selected EV and never on previous
+    # wins/losses: 0 <= EV < 0.05 -> $10; EV >= 0.05 -> $15.
     stake_mid: float = _float("STAKE_MID", 10.0)
     stake_high: float = _float("STAKE_HIGH", 15.0)
     stake_mid_ev: float = _float("STAKE_MID_EV", 0.0)
@@ -129,7 +129,7 @@ class Settings:
 
     # Dynamic shadow filter.
     trade_filter_enabled: bool = _bool("TRADE_FILTER_ENABLED", True)
-    min_trade_ev: float = _float("MIN_TRADE_EV", -0.06)
+    min_trade_ev: float = _float("MIN_TRADE_EV", 0.0)
     require_payout_bucket_ready: bool = _bool("REQUIRE_PAYOUT_BUCKET_READY", True)
     shadow_filter_enabled: bool = _bool("SHADOW_FILTER_ENABLED", True)
     shadow_stake: float = _float("SHADOW_STAKE", 10.0)
